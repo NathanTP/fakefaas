@@ -1,0 +1,7 @@
+onnxruntime
+numpy
+sympy
+transformers
+onnx
+argparse
+redis

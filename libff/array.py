@@ -2,13 +2,14 @@ import pathlib
 import os
 import re
 import abc
+import ctypes
 import shutil
 import itertools
 import operator
 import json
 import numpy as np
 
-FileDistribArrayMount = pathlib.Path("/shared")
+FileArrayMount = None 
 
 class DistribArrayError(Exception):
     def __init__(self, cause):
@@ -19,11 +20,11 @@ class DistribArrayError(Exception):
         return self.cause
 
 
-def SetDistribMount(newRoot: pathlib.Path):
+def SetFileMount(newRoot: pathlib.Path):
     """Change the default mount point for File distributed arrays to newRoot.
     It is not necessary to call this, the default is '/shared'"""
-    global FileDistribArrayMount
-    FileDistribArrayMount = newRoot
+    global FileArrayMount
+    FileArrayMount = newRoot
 
 
 class ArrayShape():
@@ -59,6 +60,20 @@ class ArrayShape():
 class DistribArray(abc.ABC):
     # An ArrayShape describing the lengths and capacities of the partitions in this array
     shape = None
+
+    @classmethod
+    @abc.abstractmethod
+    def Create(cls, name, shape: ArrayShape):
+        """Create a new distrib array"""
+        pass
+
+
+    @classmethod
+    @abc.abstractmethod
+    def Open(cls, name):
+        """Open an existing distrib array"""
+        pass
+
 
     @abc.abstractmethod
     def Close(self):
@@ -126,8 +141,8 @@ class fileDistribArray(DistribArray):
 
 
     @classmethod
-    def Create(cls, rootPath, shape: ArrayShape):
-        arr = cls(rootPath)
+    def Create(cls, name, shape: ArrayShape):
+        arr = cls(FileArrayMount / name)
 
         # These need open permissions because of docker user mismatches (docker
         # will use root so the host can't re-open the file).
@@ -142,8 +157,8 @@ class fileDistribArray(DistribArray):
         return arr
 
     @classmethod
-    def Open(cls, rootPath):
-        arr = cls(rootPath)
+    def Open(cls, name):
+        arr = cls(FileArrayMount / name)
 
         if not arr.rootPath.exists():
             raise DistribArrayError("Array {} does not exist".format(rootPath))
@@ -234,28 +249,6 @@ class partRef():
         else:
             return self.arr.ReadPart(self.partID, start=self.start, nbyte=self.nbyte, dest=dest)
 
-# {arrayName : fileDistribArray}, minimize the number of re-opened files. This
-# makes the partRefs list non-threadsafe and makes it so you have to close all
-# or none, closing one may close many others.
-openArrs = {}
-
-def __fileGetRef(req) -> partRef:
-    """Return a partRef from an entry in the 'input' field of a req"""
-    arr = None
-    if req['arrayName'] in openArrs:
-        arr = openArrs[req['arrayName']]
-    else:
-        arr = fileDistribArray.Open(FileDistribArrayMount / req['arrayName'])
-        openArrs[req['arrayName']] = arr
-
-    # Internally, it's easier to work with absolute numbers, so we convert -1
-    # nbyte's from the request into their real value
-    nbyte = req['nbyte']
-    if nbyte == -1:
-        nbyte = arr.shape.lens[req['partID']]
-
-    return partRef(arr, partID=req['partID'], start=req['start'], nbyte=nbyte)
-
 
 def readPartRefs(refs):
     nTotal = 0
@@ -270,43 +263,3 @@ def readPartRefs(refs):
         loc += r.nbyte
 
     return out
-
-
-def getPartRefs(req: dict):
-    """Returns a list of partRefs from a sort request dictionary."""
-
-    if req['arrType'] == "file":
-        return [__fileGetRef(r) for r in req['input']]
-    else:
-        raise ValueError("Invalid request type: " + str(req['arrType']))
-
-
-def __fileGetOutputArray(req, shape: ArrayShape) -> fileDistribArray:
-    return fileDistribArray.Create(FileDistribArrayMount / req['output'], shape)
-
-
-def getOutputArray(req: dict):
-    """Returns a FileDistribArray to use for the output of req"""
-
-    if req['arrType'] == "file":
-        return __fileGetOutputArray(req)
-    else:
-        raise ValueError("Invalid request type: " + str(req['arrType']))
-
-
-def writeOutput(req: dict, rawBytes, boundaries):
-    caps = np.array(boundaries)
-    caps *= 4
-    caps = np.diff(caps, append=len(rawBytes))
-    
-    shape = ArrayShape.fromCaps(caps.tolist())
-    outArr = fileDistribArray.Create(FileDistribArrayMount / req['output'], shape)
-    outArr.WriteAll(rawBytes)
-    outArr.Close()
-
-
-# Generates n random integers and returns a bytearray of them
-def generateInputs(n):
-    rng = np.random.default_rng()
-    vals = bytearray(rng.bytes(n*4))
-    return vals

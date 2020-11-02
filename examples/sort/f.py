@@ -12,7 +12,6 @@ import operator
 import time
 import numpy
 import pylibsort
-import libff.array as farr
 
 # ol-install: numpy
 
@@ -47,7 +46,7 @@ def f(event):
                 }
 
     refs = pylibsort.getPartRefs(event)
-    rawBytes = farr.readPartRefs(refs)
+    rawBytes = pylibsort.readPartRefs(refs)
 
     try:
         boundaries = pylibsort.sortPartial(rawBytes, event['offset'], event['width'])
@@ -84,17 +83,17 @@ def selfTest():
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        farr.SetFileMount(tDir)
+        pylibsort.SetDistribMount(tDir)
 
         inArrName = "faasSortTestIn"
         outArrName = "faasSortTestOut"
 
         # Write source arrays
-        inShape = farr.ArrayShape.fromUniform(bytesPerPart, npart)
+        inShape = pylibsort.ArrayShape.fromUniform(bytesPerPart, npart)
         refs = []
         for arrX in range(narr):
             arrName = inArrName + str(arrX)
-            inArr = farr.fileDistribArray.Create(arrName, inShape)
+            inArr = pylibsort.DistribArray.Create(arrName, inShape)
 
             start = (arrX*npart)*bytesPerPart
             end = start + (bytesPerPart*npart)
@@ -132,7 +131,7 @@ def selfTest():
             print("FAILURE: Function returned error: " + resp['err'])
             exit(1)
 
-        outArr = farr.fileDistribArray.Open(outArrName)
+        outArr = pylibsort.DistribArray.Open(outArrName)
         outBuf = outArr.ReadAll()
         boundaries = outArr.shape.starts
 
@@ -159,7 +158,7 @@ def directInvoke():
     if dataDir == "":
         print(json.dumps({ "success" : False, "err" : "OL_SHARED_VOLUME not set, set it to the shared directory for distrib arrays"}))
         exit(1)
-    farr.SetFileMount(pathlib.Path(dataDir))
+    pylibsort.SetDistribMount(pathlib.Path(dataDir))
 
     
     try:

@@ -9,9 +9,9 @@ import operator
 import json
 import numpy as np
 
-FileArrayMount = None 
+FileMount = None
 
-class DistribArrayError(Exception):
+class ArrayError(Exception):
     def __init__(self, cause):
         self.cause = cause
 
@@ -23,55 +23,20 @@ class DistribArrayError(Exception):
 def SetFileMount(newRoot: pathlib.Path):
     """Change the default mount point for File distributed arrays to newRoot.
     It is not necessary to call this, the default is '/shared'"""
-    global FileArrayMount
-    FileArrayMount = newRoot
+    global FileMount
+    FileMount = pathlib.Path(newRoot)
 
 
-class ArrayShape():
-    def __init__(self, caps, lens):
-        """You probably don't want to call this directly, use the from* methods instead"""
-        self.caps = caps.copy()
-        self.lens = lens.copy()
-        self.npart = len(caps)
-        
-        # Starting location of each partition, includes a vitual partition n+1
-        # to make iteration easier
-        self.starts = [0]*(self.npart+1)
-
-        total = sum(self.caps)
-        self.starts[self.npart] = total
-        for i in reversed(range(self.npart)):
-            total -= self.caps[i]
-            self.starts[i] = total
-            
-
-    @classmethod
-    def fromUniform(cls, cap, npart):
-        """Shape will have npart partitions, all with the same capacity"""
-        return cls([cap]*npart, [0]*npart)
+class Array(abc.ABC):
+    """A distributed array, it can be of arbitrary size and
+    will be available remotely (indexed by name)."""
 
 
-    @classmethod
-    def fromCaps(cls, caps):
-        """Explicitly provide a list of capacities"""
-        return cls(caps, [0]*len(caps))
-
-    
-class DistribArray(abc.ABC):
-    # An ArrayShape describing the lengths and capacities of the partitions in this array
-    shape = None
-
-    @classmethod
     @abc.abstractmethod
-    def Create(cls, name, shape: ArrayShape):
-        """Create a new distrib array"""
-        pass
-
-
-    @classmethod
-    @abc.abstractmethod
-    def Open(cls, name):
-        """Open an existing distrib array"""
+    def __init__(self, name, noCreate=False):
+        """Create a new local Array reference. If noCreate is True, the array
+        must already exist, otherwise a new Array will be created if it does
+        not already exist."""
         pass
 
 
@@ -89,177 +54,79 @@ class DistribArray(abc.ABC):
 
 
     @abc.abstractmethod
-    def ReadPart(self, partID, start=0, nbyte=-1):
-        """Read nbyte bytes from the partition starting from offset 'start'. If
-        nbyte is -1, read the entire remaining partition after start."""
+    def Read(self, start=0, nbyte=-1, dest=None):
+        """Read nbytes from the array starting from offset 'start'. If nbyte is
+        -1, the whole array is read. If dest is provided, the data will be read
+        into dest (a mutable bytes-like object)."""
         pass
 
 
     @abc.abstractmethod
-    def WritePart(self, partID, buf):
-        """Append the contents of buf to partID. The partition must have
-        sufficient remaining capacity to store buf."""
+    def Write(self, buf, start=0):
+        """Write the contents of buf to the array starting at start. Starts
+        after the end of the array will be zero filled. The array will be
+        extended as needed."""
         pass
 
 
-    @abc.abstractmethod
-    def ReadAll(self):
-        """Returns the entire contents of the array in a single buffer. The
-        returned buffer will match the total reserved capacity of the array,
-        use the shape attribute to determine partition boundaries and the valid
-        portions of each partition."""
-        pass
+class FileArray(Array):
+    """An Array backed by a file, users must call SetFileMount() before using
+    FileArrays. Files have practical and performance implications. Arrays can
+    be large (limited by your disk space), but having many small arrays is
+    probably not ideal and may stress your OS. Be careful. Note that each open
+    array implies a file handle, there are OS limits to how many open files you
+    can have. Best to close arrays aggresively."""
 
-
-    @abc.abstractmethod
-    def WriteAll(self, buf):
-        """Completely overwrite an array with the contents of buf. Each
-        partition is assumed to use its entire capacity."""
-        pass
-
-
-class fileDistribArray(DistribArray):
-    """A distributed array that stores its data in the filesystem. If the
-    provided path already exists, it is used directly, otherwise a directory is
-    created for the new array. If the array already exists, the npart argument
-    is ignored."""
-    shape = None
-
-    def __init__(self, rootPath):
-        """Prepare the array for opening or creation. You almost certainly
-        don't want to call this directly, use Open or Create instead"""
-        self.rootPath = pathlib.Path(rootPath)
+    def __init__(self, name, noCreate=False):
+        """Create a new local Array reference. If noCreate is True, the array
+        must already exist, otherwise a new Array will be created if it does
+        not already exist."""
+        self.rootPath = FileMount / name
         self.datPath = self.rootPath / 'data.dat'
-        self.metaPath = self.rootPath / 'meta.json'
+
+        if not self.datPath.exists():
+            if noCreate:
+                raise ArrayError("Array {} does not exist".format(self.rootPath))
+            else:
+                # These need open permissions because of docker user mismatches (docker
+                # will use root so the host can't re-open the file).
+                self.rootPath.mkdir(0o777)
+                self.datPath.touch(0o666)
+
+        self.dataF = open(self.datPath, 'r+b')
+        self.cap = self.datPath.stat().st_size
         self.closed = False
-
-
-    def __commitMeta(self):
-        with open(self.metaPath, 'w') as metaF:
-            jsonShape = {"Lens" : self.shape.lens, "Caps" : self.shape.caps}
-            json.dump(jsonShape, metaF)
-
-
-    @classmethod
-    def Create(cls, name, shape: ArrayShape):
-        arr = cls(FileArrayMount / name)
-
-        # These need open permissions because of docker user mismatches (docker
-        # will use root so the host can't re-open the file).
-        arr.rootPath.mkdir(0o777)
-        arr.datPath.touch(0o666)
-        arr.metaPath.touch(0o666)
-
-        arr.shape = ArrayShape(lens=shape.lens.copy(), caps=shape.caps.copy())
-        
-        arr.dataF = open(arr.datPath, 'r+b')
-
-        return arr
-
-    @classmethod
-    def Open(cls, name):
-        arr = cls(FileArrayMount / name)
-
-        if not arr.rootPath.exists():
-            raise DistribArrayError("Array {} does not exist".format(rootPath))
-
-        with open(arr.metaPath, 'r') as metaF:
-            jsonShape = json.load(metaF)
-            arr.shape = ArrayShape(lens = jsonShape['Lens'], caps = jsonShape['Caps'])
-        
-        arr.dataF = open(arr.datPath, 'r+b')
-
-        return arr
 
 
     def Close(self):
         # Being idempotent just makes things easier
         if not self.closed:
             self.dataF.close()
-            self.__commitMeta()
             self.closed = True
 
 
     def Destroy(self):
         shutil.rmtree(self.rootPath)
 
+    def Read(self, start=0, nbyte=-1, dest=None):
+        if start >= self.cap:
+            raise ArrayError("Read beyond end of array: start location ({}) beyond end of array ({})".format(start, self.cap))
 
-    def ReadPart(self, partID, start=0, nbyte=-1, dest=None):
-        """Read partition 'partID' of this array. If 'dest' is specified, the
-        data is read into that bytearray or memoryview, otherwise a new
-        bytearray is returned"""
+
         if nbyte == -1:
-            nbyte = self.shape.lens[partID] - start
+            nbyte = self.cap - start
 
-        if start > self.shape.lens[partID] or start+nbyte > self.shape.lens[partID]:
-            raise DistribArrayError("Read beyond end of partition {} (asked for {}+{}, limit {}".format(partID, start, nbyte, self.shape.lens[partID])) 
+        if start + nbyte > self.cap:
+            raise ArrayError("Read beyond end of array: requested too many bytes ({})".format(nbyte))
 
-        self.dataF.seek(self.shape.starts[partID] + start)
-
+        self.dataF.seek(start) 
         if dest is None:
             return bytearray(self.dataF.read(nbyte))
         else:
             self.dataF.readinto(dest[:nbyte])
 
 
-    def WritePart(self, partId, buf):
-        if self.shape.lens[partId] + len(buf) > self.shape.caps[partId]:
-            raise DistribArrayError("Wrote beyond end of partition (asked for {}b, limit {}b)".format(len(buf),
-                self.shape.caps[partId] - self.shape.lens[partId]))
-
-        self.dataF.seek(self.shape.starts[partId] + self.shape.lens[partId])
+    def Write(self, buf, start=0):
+        self.dataF.seek(start)
         self.dataF.write(buf)
-        self.shape.lens[partId] += len(buf)
-
-
-    def ReadAll(self):
-        """Returns the entire contents of the array in a single buffer. The
-        returned buffer will match the total reserved capacity of the array,
-        use the shape attribute to determine partition boundaries and the valid
-        portions of each partition."""
-        self.dataF.seek(0)
-        # return bytearray(self.dataF.read())
-        return memoryview(self.dataF.read())
-
-
-    def WriteAll(self, buf):
-        """Completely overwrite an array with the contents of buf. Each
-        partition is assumed to use its entire capacity."""
-        totalCap = sum(self.shape.caps)
-        if len(buf) != totalCap:
-            raise DistribArrayError("Buffer length {}b does not match array capacity {}b".format(len(buf), totalCap))
-
-        self.dataF.seek(0)
-        self.dataF.write(buf)
-
-        self.shape.lens = self.shape.caps.copy()
-        
-
-class partRef():
-    """Reference to a segment of a partition to read."""
-    def __init__(self, arr: DistribArray, partID=0, start=0, nbyte=-1):
-        self.arr = arr
-        self.partID = partID
-        self.start = start
-        self.nbyte = nbyte 
-
-    def read(self, dest=None):
-        if dest is None:
-            return self.arr.ReadPart(self.partID, start=self.start, nbyte=self.nbyte)
-        else:
-            return self.arr.ReadPart(self.partID, start=self.start, nbyte=self.nbyte, dest=dest)
-
-
-def readPartRefs(refs):
-    nTotal = 0
-    for r in refs:
-        nTotal += r.nbyte
-
-    out = memoryview(bytearray(nTotal))
-
-    loc = 0
-    for r in refs:
-        r.read(dest=out[loc:])
-        loc += r.nbyte
-
-    return out
+        self.cap += len(buf)

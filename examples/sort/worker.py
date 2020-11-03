@@ -12,6 +12,7 @@ import operator
 import time
 import numpy
 import pylibsort
+import libff.invoke
 
 # ol-install: numpy
 
@@ -20,7 +21,7 @@ import cProfile
 import pstats
 import io
 
-doProfile = True 
+doProfile = False 
 
 def printCSV(pr, path):
     path = pathlib.Path(path)
@@ -37,13 +38,10 @@ def printCSV(pr, path):
         f.write(result)
 
 
-def f(event):
+def sortPartial(event):
     # Temporary limitation for testing
     if event['arrType'] != 'file':
-        return {
-                "success" : False,
-                "err" : "Function currently only supports file distributed arrays"
-                }
+        return { "error" : "Function currently only supports file distributed arrays" }
 
     refs = pylibsort.getPartRefs(event)
     rawBytes = pylibsort.readPartRefs(refs)
@@ -51,17 +49,11 @@ def f(event):
     try:
         boundaries = pylibsort.sortPartial(rawBytes, event['offset'], event['width'])
     except Exception as e:
-        return {
-                "success" : False,
-                "err" : str(e)
-               }
+        return { "error" : str(e) }
 
     pylibsort.writeOutput(event, rawBytes, boundaries)
     
-    return {
-            "success" : True,
-            "err" : "" 
-           }
+    return { "error" : None }
 
 def selfTest():
     """Main only used for testing purposes"""
@@ -118,17 +110,17 @@ def selfTest():
         if doProfile:
             pr = cProfile.Profile()
             pr.enable()
-            resp = f(req)
+            resp = sortPartial(req)
             pr.disable()
             printCSV(pr, "./faas{}b.csv".format(width))
             pr.dump_stats("./faas{}b.prof".format(width))
         else:
             start = time.time()
-            resp = f(req)
+            resp = sortPartial(req)
             print(time.time() - start)
 
-        if not resp['success']:
-            print("FAILURE: Function returned error: " + resp['err'])
+        if resp['error'] is not None:
+            print("FAILURE: Function returned error: " + resp['error'])
             exit(1)
 
         outArr = pylibsort.DistribArray.Open(outArrName)
@@ -148,43 +140,41 @@ def selfTest():
     print("PASS")
 
 
-def directInvoke():
+def directInvoke(arrMnt):
     """Call this to directly invoke the function from the command line instead
-    of through a FaaS provider, it expects the arguments to be in JSON as
-    argv[1]. This function behaves as a main(); it calls exit() directly and
-    never returns."""
+    of through a FaaS provider, it expects the arguments to be in JSON, they
+    are read from stdin. Function returns when stdin is closed."""
 
-    dataDir = os.environ.get('OL_SHARED_VOLUME', "")
-    if dataDir == "":
-        print(json.dumps({ "success" : False, "err" : "OL_SHARED_VOLUME not set, set it to the shared directory for distrib arrays"}))
-        exit(1)
-    pylibsort.SetDistribMount(pathlib.Path(dataDir))
+    pylibsort.SetDistribMount(arrMnt)
 
-    
-    try:
-        jsonCmd = sys.stdin.read()
-        cmd = json.loads(jsonCmd)
-    except Exception as e:
-        print(json.dumps({ "success" : False, "err" : "Argument parsing error: " + str(e) }))
-        exit(1)
+    for rawCmd in sys.stdin:
+        try:
+            cmd = json.loads(rawCmd)
+        except json.decoder.JSONDecodeError as e:
+            err = "Failed to parse command (must be valid JSON): " + str(e)
+            print(json.dumps({ "error" : err }), flush=True)
+            continue
 
-    resp = None
-    if doProfile:
-        pr = cProfile.Profile()
-        pr.enable()
-        resp = f(cmd)
-        pr.disable()
-        printCSV(pr, "./faas{}.csv".format(cmd['output']))
-        pr.dump_stats("./faas{}.prof".format(cmd['output']))
-    else:
-        resp = f(cmd)
+        resp = None
+        if doProfile:
+            pr = cProfile.Profile()
+            pr.enable()
+            resp = sortPartial(cmd)
+            pr.disable()
+            printCSV(pr, "./faas{}.csv".format(cmd['output']))
+            pr.dump_stats("./faas{}.prof".format(cmd['output']))
+        else:
+            resp = sortPartial(cmd)
 
-    print(json.dumps(resp))
-    if resp['success']:
-        exit(0)
-    else:
-        exit(1)
- 
+        print(json.dumps(resp), flush=True)
+
+
+def libffInvoke():
+    """Use this as main when you are using libff.invoke to invoke the sort.
+    See libff.invoke documentation for how this works"""
+
+    libff.invoke.RemoteProcessServer({"sortPartial" : sortPartial}, sys.argv[1:])
+
 
 # @profile
 def testGenerate():
@@ -200,6 +190,7 @@ def testGenerate():
 
 
 if __name__ == "__main__":
-    selfTest()
+    # selfTest()
+    libffInvoke()
     # directInvoke()
     # testGenerate()

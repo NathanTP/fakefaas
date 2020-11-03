@@ -1,235 +1,152 @@
-import json
-import subprocess as sp
 import pathlib
 import sys
-from . import kv
-import signal
-from .util import *
+import subprocess as sp
+import abc
 import importlib.util
+import argparse
+import json
+from . import array
 
-# Allow importing models from sibling directory (python nonsense) 
-# sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
-# import models.ferplus as ferplus
-# import models.bertsquad as bertsquad 
-
-class InvocationError():
+class InvocationError(Exception):
     def __init__(self, msg):
         self.msg = msg
 
     def __str__(self):
-        return msg
+        return "Remote function invocation error: " + self.msg
 
-modelsDir = (pathlib.Path(__file__).parent.parent / "models").resolve()
 
-class LocalModel:
-    def __init__(self, modelPath, objStore, provider="CUDA_ExecutionProvider"):
-        self.objStore = objStore
-        self.times = {}
+class RemoteFunc(abc.ABC):
+    """Represents a remote (or at least logically separate) function"""
 
-        spec = importlib.util.spec_from_file_location(modelPath.stem, modelPath)
-        modelPackage = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(modelPackage)
-        self.model = modelPackage.Model(provider=provider, profTimes=self.times)
-
-    def pre(self, name, inputKey=None):
-        if inputKey is None:
-            inputKey = name+".in"
-
-        inputs = self.objStore.get(inputKey, self.times)
-        with timer("pre", self.times):
-            ret = self.model.pre(inputs)
-
-        self.objStore.put(name+".pre", ret, self.times)
-        return name+".pre"
+    @abc.abstractmethod
+    def __init__(self, packagePath, funcName, arrayMnt):
+        """Create a remote function from the provided package.funcName.
+        arrayMnt should point to wherever child workers should look for
+        arrays."""
+        pass
     
 
-    def run(self, name):
-        inputs = self.objStore.get(name+".pre", self.times)
-
-        with timer("run", self.times):
-            ret = self.model.run(inputs)
-
-        self.objStore.put(name+".run", ret, self.times)
-        return name+".run"
-
-
-    def post(self, name):
-        inputs = self.objStore.get(name+".run", self.times)
-
-        with timer("post", self.times):
-            ret = self.model.post(inputs)
-        
-        self.objStore.put(name+".final", ret, self.times)
-        return name+".final"
-
-
-    def inputs(self, name):
-        inputs = self.model.inputs()
-        self.objStore.put(name+".in", inputs)
-        return name+".in"
-
-    def close(self):
-        return self.times
+    @abc.abstractmethod
+    def Invoke(self, arg):
+        """Invoke the function with the dictionary-typed argument arg. Will
+        return the response dictionary from the function."""
         pass
 
-class RemoteModel:
-    def __init__(self, modelPath, objStore, provider="CUDA_ExecutionProvider"):
-        """Create a new model executor for modelName. Arguments will be passed through objStore."""
-        self.objStore = objStore
-        self.provider = provider
-
-        self.proc = sp.Popen(["python3", str(modelPath)], bufsize=1, stdin=sp.PIPE, stdout=sp.PIPE, text=True)
-
-        # Note: local models would wait until everything was ready before
-        # returning. For remote, that's all hapening in a different process so
-        # it can overlap with local computation. The remote init time will show
-        # up as a slower first invocation of a function. I'm not sure how best
-        # to report this.
+    @abc.abstractmethod
+    def Close(self):
+        """Clean up the function executor and report any accumulated statistics"""
+        pass
 
 
-    def _invoke(self, arg):
-        self.proc.stdin.write(json.dumps(arg) + "\n")
+_importedFuncPackages = {}
+class DirectRemoteFunc(RemoteFunc):
+    """Invokes the function directly in the callers process. This will import
+    the function's package."""
+
+    def __init__(self, packagePath, funcName, arrayMnt):
+        if packagePath in _importedFuncPackages:
+            package = __importedFuncPackages[packagePath]
+        else:
+            spec = importlib.util.spec_from_file_location(packagePath.stem, packagePath)
+            package = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(package)
+            _importedFuncPackages[packagePath] = package
+
+        self.func = getattr(package, funcName)
+
+
+    def Invoke(self, arg):
+        return self.func(arg)
+
+
+    def Close(self):
+        # No stats for direct invocation yet
+        return {}
+
+
+_runningFuncProcesses = {}
+class ProcessRemoteFunc(RemoteFunc):
+    # XXX probably should replace arrayMnt with a more generic handle to the
+    # distribued array subsystem. Basically make the whole array system more
+    # OOP instead of relying on global state (like logging or viper)
+    def __init__(self, packagePath, funcName, arrayMnt):
+        if packagePath in _runningFuncProcesses:
+            self.proc = _runningFuncProcesses[packagePath]
+        else:
+            self.proc = sp.Popen(["python3", str(packagePath), '-m', arrayMnt], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+
+        self.fname = funcName
+        self.packagePath = packagePath
+        self.arrayMnt = arrayMnt
+
+    def Invoke(self, arg):
+        req = { "command" : "invoke",
+                "fName" : self.fname,
+                "fArg" : arg }
+
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
         rawResp = self.proc.stdout.readline()
         resp = json.loads(rawResp)
         if resp['error'] is not None:
             raise InvocationError(resp['error'])
-        return resp
 
+        return resp['resp']
 
-    def pre(self, name, inputKey=None):
-        if inputKey is None:
-            inputKey = name+".in"
-
-        req = {
-            "func" : "pre",
-            "provider" : self.provider,
-            "inputKey" : inputKey,
-            "outputKey" : name+".pre"
-        }
-
-        self._invoke(req)
-        return name+".pre"
-
-
-    def run(self, name):
-        req = {
-            "func" : "run",
-            "provider" : self.provider,
-            "inputKey" : name+".pre",
-            "outputKey" : name+".run"
-        }
-
-        self._invoke(req)
-        return name+".run"
-
-
-    def post(self, name):
-        req = {
-            "func" : "post",
-            "provider" : self.provider,
-            "inputKey" : name+".run",
-            "outputKey" : name+".final"
-        }
-
-        self._invoke(req)
-        return name+".final"
-
-    def inputs(self, name):
-        req = {
-            "func" : "inputs",
-            "provider" : self.provider,
-            "inputKey" : None,
-            "outputKey" : name+".in"
-        }
-
-        self._invoke(req)
-        return name+".in"
-
-    def close(self):
+    def Close(self):
         req = { "func" : "reportStats" }
-        resp = self._invoke(req)
+        resp = self.Invoke(req)
 
+        del _runningFuncProcesses[self.packagePath]
         self.proc.stdin.close()
         self.proc.wait()
 
         return { name : prof(fromDict=profile) for name, profile in resp['times'].items() }
 
+    def SetArrayMnt(self, mnt):
+        self.arrayMnt = mnt
 
-argFields = [
-        "func", # Function to invoke (either "pre", "run", or "post")
-        "provider", # onnxruntime provider 
-        "inputKey", # Key name to read from for input
-        "outputKey", # Key name that outputs should be written to
-        ]
+def __remoteServerRespond(msg):
+    print(json.dumps(msg), flush=True)
 
-def remoteServer(modelClass):
-    def onExit(sig, frame):
-        print("Function executor exiting")
-        sys.exit(0)
 
-    signal.signal(signal.SIGINT, onExit)
+def RemoteProcessServer(funcs, serverArgs):
+    """Begin serving requests from stdin (your module is being called as a
+    process). This function will return when the client is done with you
+    (closes stdin). Server args are generally provided by libff.invoke on the
+    command line (you should usually pass sys.argv).
+    
+    funcs is a dictionary mapping cannonical function names (what a remote
+    invoker would call) to the actual python function object"""
 
-    times = {}
+    parser = argparse.ArgumentParser(description="libff invocation server")
+    parser.add_argument("-m", "--mount", help="Directory where libff.array's are mounted")
+    args = parser.parse_args(serverArgs)
 
-    # Eagerly set up any needed state. It's not clear how realistic this is,
-    # might switch it around later.
-    with timer("init", times):
-        with timer("imports", times):
-            modelClass.imports()
+    array.SetFileMount(args.mount)
 
-        cpuTimes = {}
-        gpuTimes = {}
-        modelStates = {
-                "CPUExecutionProvider" : modelClass(provider="CPUExecutionProvider", profTimes=cpuTimes),
-                "CUDAExecutionProvider" : modelClass(provider="CUDAExecutionProvider", profTimes=gpuTimes)
-                }
-        mergeTimers(times, cpuTimes, "cpuModel.")
-        mergeTimers(times, gpuTimes, "gpuModel.")
-
-    objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
-
-    for rawCmd in sys.stdin:
+    for rawReq in sys.stdin:
         try:
-            cmd = json.loads(rawCmd)
+            req = json.loads(rawReq)
         except json.decoder.JSONDecodeError as e:
             err = "Failed to parse command (must be valid JSON): " + str(e)
-            print(json.dumps({ "error" : err }), flush=True)
+            __remoteServerRespond({ "error" : err })
             continue
 
-        if cmd['func'] in ['reportStats']:
-            # System commands
-            if cmd['func'] == 'reportStats':
-                resp = {}
-                resp['times'] = { name : timer.__dict__ for name, timer in times.items() }
-                resp['error'] = None
-                print(json.dumps(resp), flush=True)
+
+        try:
+            if req['command'] == 'invoke':
+                if req['fName'] in funcs:
+                    resp = funcs[req['fName']](req['fArg'])
+                else:
+                    __remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
+
+                __remoteServerRespond({"error" : None, "resp" : resp})
+
+            elif req['command'] == 'reportStats':
+                __remoteServerRespond({"error" : None, "stats" : {}})
+
             else:
-                err = "unrecognized function " + str(cmd['func'])
-                print(json.dumps({ "error" : err }), flush=True)
-            continue
-        else:
-            # Function commands
-            curModel = modelStates[cmd['provider']]
-
-            if cmd['func'] == "pre":
-                funcInputs = objStore.get(cmd['inputKey'], times)
-                with timer("pre", times):
-                    funcOut = curModel.pre(funcInputs)
-            elif cmd['func'] == 'run':
-                funcInputs = objStore.get(cmd['inputKey'], times)
-                with timer("run", times):
-                    funcOut = curModel.run(funcInputs)
-            elif cmd['func'] == 'post':
-                funcInputs = objStore.get(cmd['inputKey'], times)
-                with timer("post", times):
-                    funcOut = curModel.post(funcInputs)
-            elif cmd['func'] == 'inputs':
-                funcOut = curModel.inputs()
-            else:
-                err = "unrecognized function " + str(cmd['func'])
-                print(json.dumps({ "error" : err }), flush=True)
-                continue
-
-            objStore.put(cmd['outputKey'], funcOut, times)
-            print(json.dumps({"error" : None}), flush=True)
-            continue
+                __remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
+        except Exception as e:
+            __remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})

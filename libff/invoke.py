@@ -38,25 +38,34 @@ class RemoteFunc(abc.ABC):
         pass
 
 
+# We avoid importing and registering the same package multiple times, doing so
+# is inefficient and may be incorrect (we don't require that direct function
+# registration be idempotent). You still need a DirectRemoteFunc object per
+# function, but the heavy state is memoized here.
 _importedFuncPackages = {}
+
 class DirectRemoteFunc(RemoteFunc):
     """Invokes the function directly in the callers process. This will import
-    the function's package."""
+    the function's package.
+    
+    The package must implement a function named "LibffInvokeRegister" that
+    returns a mapping of function name -> function object. This is similar to
+    the 'funcs' argument to RemoteProcessServer."""
 
     def __init__(self, packagePath, funcName, arrayMnt):
+        self.fName = funcName
         if packagePath in _importedFuncPackages:
-            package = __importedFuncPackages[packagePath]
+            self.funcs = _importedFuncPackages[packagePath]
         else:
             spec = importlib.util.spec_from_file_location(packagePath.stem, packagePath)
             package = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(package)
-            _importedFuncPackages[packagePath] = package
-
-        self.func = getattr(package, funcName)
+            self.funcs = package.LibffInvokeRegister(arrayMnt)
+            _importedFuncPackages[packagePath] = self.funcs 
 
 
     def Invoke(self, arg):
-        return self.func(arg)
+        return self.funcs[self.fName](arg)
 
 
     def Close(self):
@@ -94,7 +103,7 @@ class ProcessRemoteFunc(RemoteFunc):
         return resp['resp']
 
     def Close(self):
-        req = { "func" : "reportStats" }
+        req = { "command" : "reportStats" }
         resp = self.Invoke(req)
 
         del _runningFuncProcesses[self.packagePath]
@@ -103,10 +112,8 @@ class ProcessRemoteFunc(RemoteFunc):
 
         return { name : prof(fromDict=profile) for name, profile in resp['times'].items() }
 
-    def SetArrayMnt(self, mnt):
-        self.arrayMnt = mnt
 
-def __remoteServerRespond(msg):
+def _remoteServerRespond(msg):
     print(json.dumps(msg), flush=True)
 
 
@@ -130,7 +137,7 @@ def RemoteProcessServer(funcs, serverArgs):
             req = json.loads(rawReq)
         except json.decoder.JSONDecodeError as e:
             err = "Failed to parse command (must be valid JSON): " + str(e)
-            __remoteServerRespond({ "error" : err })
+            _remoteServerRespond({ "error" : err })
             continue
 
 
@@ -139,14 +146,14 @@ def RemoteProcessServer(funcs, serverArgs):
                 if req['fName'] in funcs:
                     resp = funcs[req['fName']](req['fArg'])
                 else:
-                    __remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
+                    _remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
 
-                __remoteServerRespond({"error" : None, "resp" : resp})
+                _remoteServerRespond({"error" : None, "resp" : resp})
 
             elif req['command'] == 'reportStats':
-                __remoteServerRespond({"error" : None, "stats" : {}})
+                _remoteServerRespond({"error" : None, "stats" : {}})
 
             else:
-                __remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
+                _remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
         except Exception as e:
-            __remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})
+            _remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})

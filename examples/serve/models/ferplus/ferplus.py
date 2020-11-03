@@ -3,8 +3,6 @@ import sys
 import json
 import signal
 
-# # Allow importing fakefaas
-# sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
 # import fakefaas as ff
 import libff as ff
 
@@ -109,6 +107,23 @@ class Model:
         return inStr
 
 
+def LibffInvokeRegister(mnt):
+    """Callback required by libff.invoke in DirectRemoteFunc mode"""
+
+    # Need to be able to import from the serve directory (where ModelWorker is defined)
+    sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
+    import ModelWorker
+
+    modelHandler = ModelWorker.modelServer(Model)
+    return ModelWorker.getFuncMap(modelHandler)
+
+
 if __name__ == "__main__":
     import libff.invoke
-    libff.invoke.remoteServer(Model)
+
+    # Need to be able to import from the serve directory (where ModelWorker is defined)
+    sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent.parent))
+    import ModelWorker
+
+    modelHandler = ModelWorker.modelServer(Model)
+    libff.invoke.RemoteProcessServer(ModelWorker.getFuncMap(modelHandler), sys.argv[1:])

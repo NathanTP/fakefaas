@@ -9,7 +9,7 @@ import redis
 import pickle
 import libff as ff
 import libff.kv
-import libff.invoke
+import ModelWorker
 
 modelDir = pathlib.Path(__file__).parent.resolve() / "models"
 
@@ -54,9 +54,9 @@ def main(args):
     with ff.timer("init", times):
         modelTimes = {}
         if args.remote:
-            state = ff.invoke.RemoteModel(modelDir / args.model / (args.model + ".py"), objStore, provider=provider)
+            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "process")
         else:
-            state = ff.invoke.LocalModel(modelDir / args.model / (args.model + ".py"), objStore, provider=provider)
+            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "direct")
 
     with ff.timer("run", times):
         runTest(state, objStore, times, niter=args.niter)

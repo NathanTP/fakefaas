@@ -176,6 +176,15 @@ def libffInvoke():
     libff.invoke.RemoteProcessServer({"sortPartial" : sortPartial}, sys.argv[1:])
 
 
+def LibffInvokeRegister(mnt):
+    # This is probably redundant with the caller, but it shouldn't break
+    # anything. Until we get a more OOP version of libff.array, we're stuck
+    # with this.
+    pylibsort.SetDistribMount(mnt)
+
+    return {"sortPartial" : sortPartial}
+
+
 # @profile
 def testGenerate():
     # sz = 256*1024*1024

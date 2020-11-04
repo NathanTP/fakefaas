@@ -2,7 +2,9 @@ import pylibsort
 import numpy as np
 import tempfile
 import pathlib
+import libff
 import libff.invoke
+import libff.array
 
 def distribSort(inputName):
    pass
@@ -19,7 +21,7 @@ def testPartialDirect(nElem):
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        pylibsort.SetDistribMount(tDir)
+        pylibsort.ConfigureBackend('file', tDir)
 
         inArrName = "distribSortTestInput"
         outArrName = "distribSortTestOutput"
@@ -72,7 +74,7 @@ def testPartialNoLibff(nElem):
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        pylibsort.SetDistribMount(tDir)
+        pylibsort.ConfigureBackend('file', tDir)
 
         inArrName = "distribSortTestInput"
         outArrName = "distribSortTestOutput"
@@ -124,8 +126,10 @@ def testPartialRemote(funcClass, nElem):
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        pylibsort.SetDistribMount(tDir)
-        remFunc = funcClass(pathlib.Path("./worker.py").resolve(), "sortPartial", tDir)
+        libffCtx = libff.invoke.RemoteCtx( libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
+
+        remFunc = funcClass(pathlib.Path("./worker.py").resolve(), "sortPartial", libffCtx)
 
         inArrName = "distribSortTestInput"
         outArrName = "distribSortTestOutput"
@@ -170,6 +174,6 @@ if __name__ == "__main__":
     # testPartialDirectNoLibff(1024)
 
     # remFunc = libff.invoke.ProcessRemoteFunc(pathlib.Path("./worker.py").resolve(), "sortPartial")
-    # funcClass = libff.invoke.ProcessRemoteFunc
-    funcClass = libff.invoke.DirectRemoteFunc
+    funcClass = libff.invoke.ProcessRemoteFunc
+    # funcClass = libff.invoke.DirectRemoteFunc
     testPartialRemote(funcClass, 1024)

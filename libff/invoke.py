@@ -6,6 +6,7 @@ import importlib.util
 import argparse
 import json
 from . import array
+from . import kv 
 
 class InvocationError(Exception):
     def __init__(self, msg):
@@ -38,6 +39,14 @@ class RemoteFunc(abc.ABC):
         pass
 
 
+class RemoteCtx():
+    """Passed to remote workers when they run. Contains handles for data
+    backends etc."""
+    def __init__(self, arrayStore, kvStore):
+        self.array = arrayStore
+        self.kv = kvStore
+
+
 # We avoid importing and registering the same package multiple times, doing so
 # is inefficient and may be incorrect (we don't require that direct function
 # registration be idempotent). You still need a DirectRemoteFunc object per
@@ -52,20 +61,21 @@ class DirectRemoteFunc(RemoteFunc):
     returns a mapping of function name -> function object. This is similar to
     the 'funcs' argument to RemoteProcessServer."""
 
-    def __init__(self, packagePath, funcName, arrayMnt):
+    def __init__(self, packagePath, funcName, context):
         self.fName = funcName
+        self.ctx = context
         if packagePath in _importedFuncPackages:
             self.funcs = _importedFuncPackages[packagePath]
         else:
             spec = importlib.util.spec_from_file_location(packagePath.stem, packagePath)
             package = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(package)
-            self.funcs = package.LibffInvokeRegister(arrayMnt)
+            self.funcs = package.LibffInvokeRegister()
             _importedFuncPackages[packagePath] = self.funcs 
 
 
     def Invoke(self, arg):
-        return self.funcs[self.fName](arg)
+        return self.funcs[self.fName](arg, self.ctx)
 
 
     def Close(self):
@@ -75,10 +85,8 @@ class DirectRemoteFunc(RemoteFunc):
 
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
-    # XXX probably should replace arrayMnt with a more generic handle to the
-    # distribued array subsystem. Basically make the whole array system more
-    # OOP instead of relying on global state (like logging or viper)
-    def __init__(self, packagePath, funcName, arrayMnt):
+    def __init__(self, packagePath, funcName, context):
+        arrayMnt = context.array.FileMount
         if packagePath in _runningFuncProcesses:
             self.proc = _runningFuncProcesses[packagePath]
         else:
@@ -86,7 +94,7 @@ class ProcessRemoteFunc(RemoteFunc):
 
         self.fname = funcName
         self.packagePath = packagePath
-        self.arrayMnt = arrayMnt
+        self.ctx = context
 
     def Invoke(self, arg):
         req = { "command" : "invoke",
@@ -128,9 +136,12 @@ def RemoteProcessServer(funcs, serverArgs):
 
     parser = argparse.ArgumentParser(description="libff invocation server")
     parser.add_argument("-m", "--mount", help="Directory where libff.array's are mounted")
+    parser.add_argument("-k", "--kv", action="store_true", help="Enable the key-value store")
     args = parser.parse_args(serverArgs)
 
-    array.SetFileMount(args.mount)
+    arrStore = array.ArrayStore('file', args.mount)
+    objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
+    ctx = RemoteCtx(arrStore, objStore)
 
     for rawReq in sys.stdin:
         try:
@@ -144,7 +155,7 @@ def RemoteProcessServer(funcs, serverArgs):
         try:
             if req['command'] == 'invoke':
                 if req['fName'] in funcs:
-                    resp = funcs[req['fName']](req['fArg'])
+                    resp = funcs[req['fName']](req['fArg'], ctx)
                 else:
                     _remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
 

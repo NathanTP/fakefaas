@@ -9,8 +9,6 @@ import operator
 import json
 import numpy as np
 
-FileMount = None
-
 class ArrayError(Exception):
     def __init__(self, cause):
         self.cause = cause
@@ -20,25 +18,36 @@ class ArrayError(Exception):
         return self.cause
 
 
-def SetFileMount(newRoot: pathlib.Path):
-    """Change the default mount point for File distributed arrays to newRoot.
-    It is not necessary to call this, the default is '/shared'"""
-    global FileMount
-    FileMount = pathlib.Path(newRoot)
+class ArrayStore():
+    """A handle to the array storage backend"""
+
+    def __init__(self, storageType, mntPath=None):
+        """Create a new handle to an array storage backend. Args:
+            - storageType is currently limited to 'file', new backends will be added later. 
+            - mntPath is only meaningful for 'file' storageType, it is the directory where arrays are to be stored
+        """
+        if storageType == 'file':
+            self.storage = 'file'
+            if mntPath is not None:
+                self.FileMount = pathlib.Path(mntPath)
+            else:
+                raise ArrayError("The mntPath argument is required for the file storage type")
+        else:
+            raise ArrayError("Unsupported array storage type: " + storageType)
+
+
+    def Create(self, name):
+        if self.storage == 'file':
+            return FileArray(self.FileMount / name, noCreate=False)
+
+    def Open(self, name):
+        if self.storage == 'file':
+            return FileArray(self.FileMount / name, noCreate=True)
 
 
 class Array(abc.ABC):
     """A distributed array, it can be of arbitrary size and
     will be available remotely (indexed by name)."""
-
-
-    @abc.abstractmethod
-    def __init__(self, name, noCreate=False):
-        """Create a new local Array reference. If noCreate is True, the array
-        must already exist, otherwise a new Array will be created if it does
-        not already exist."""
-        pass
-
 
     @abc.abstractmethod
     def Close(self):
@@ -77,11 +86,11 @@ class FileArray(Array):
     array implies a file handle, there are OS limits to how many open files you
     can have. Best to close arrays aggresively."""
 
-    def __init__(self, name, noCreate=False):
+    def __init__(self, rootPath, noCreate=False):
         """Create a new local Array reference. If noCreate is True, the array
         must already exist, otherwise a new Array will be created if it does
         not already exist."""
-        self.rootPath = FileMount / name
+        self.rootPath = rootPath 
         self.datPath = self.rootPath / 'data.dat'
 
         if not self.datPath.exists():

@@ -1,6 +1,8 @@
 import pathlib
 import tempfile
 import random
+import libff
+import libff.invoke
 from libff import array as farr
 
 import pylibsort
@@ -36,7 +38,8 @@ def testFileDistribPart():
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        pylibsort.SetDistribMount(tDir)
+        libffCtx = libff.invoke.RemoteCtx(libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
 
         arr = pylibsort.DistribArray.Create("partTest0", shape)
 
@@ -104,7 +107,9 @@ def testFileDistribArray():
     shape = pylibsort.ArrayShape.fromUniform(partSz, nparts)
 
     with tempfile.TemporaryDirectory() as tDir:
-        pylibsort.SetDistribMount(tDir)
+        libffCtx = libff.invoke.RemoteCtx(libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
+
         arr = pylibsort.DistribArray.Create("distribArrayTest", shape)
 
         retNParts = arr.shape.npart
@@ -146,7 +151,9 @@ def testFilePartRef():
     shape = pylibsort.ArrayShape.fromUniform(partSz, nparts)
 
     with tempfile.TemporaryDirectory() as tDir:
-        pylibsort.SetDistribMount(tDir)
+        libffCtx = libff.invoke.RemoteCtx(libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
+
         arr = pylibsort.DistribArray.Create("filePartRefTest", shape)
 
         inBufs = fillArr(arr)
@@ -163,7 +170,9 @@ def testPartRefReq():
     shape = pylibsort.ArrayShape.fromUniform(partSz, nparts)
 
     with tempfile.TemporaryDirectory() as tDir:
-        pylibsort.SetDistribMount(tDir)
+        libffCtx = libff.invoke.RemoteCtx(libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
+
         arr = pylibsort.DistribArray.Create("partRefReqTest", shape)
 
         inBufs = fillArr(arr)

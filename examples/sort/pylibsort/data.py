@@ -19,10 +19,18 @@ class DistribArrayError(Exception):
         return self.cause
 
 
-def SetDistribMount(newRoot: pathlib.Path):
-    """Change the default mount point for File distributed arrays to newRoot.
-    It is not necessary to call this, the default is '/shared'"""
-    farr.SetFileMount(newRoot)
+# Ideally we'd make pylibsort more OOP as well, but for now we'll just stick
+# with the global
+_libffCtx = None
+def ConfigureBackend(storageType, ctx):
+    """Setup the backing store for pylibsort distributed arrays. ctx is a
+    libff.invoke.RemoteCtx. It is safe to call this multiple times, but only
+    newly created DistribArrays will be affected."""
+    if storageType != "file":
+        raise DistribArrayError("storage type: " + storageType + " not currently supported")
+
+    global _libffCtx
+    _libffCtx = ctx
 
 
 class ArrayShape():
@@ -69,30 +77,22 @@ class DistribArray():
 
     @classmethod
     def Create(cls, baseName, shape: ArrayShape, atype='file'):
-        if atype == 'file':
-            backingArr = farr.FileArray(baseName + ".dat")
-            metaArr = farr.FileArray(baseName + ".meta")
-        else:
-            raise DistribArrayError("Unsupported array type: ", atype)
+        dataArr = _libffCtx.array.Create(baseName+".dat")
+        metaArr = _libffCtx.array.Create(baseName+".meta")
 
         metaArr.Write(pickle.dumps(shape))
-        
-        distArr = cls(backingArr, metaArr, copy.deepcopy(shape))
+        distArr = cls(dataArr, metaArr, copy.deepcopy(shape))
         
         return distArr
 
 
     @classmethod
     def Open(cls, baseName, atype='file'):
-        if atype == 'file':
-            backingArr = farr.FileArray(baseName + ".dat", noCreate=True)
-            metaArr = farr.FileArray(baseName + ".meta", noCreate=True)
-        else:
-            raise DistribArrayError("Unsupported array type: ", atype)
+        dataArr = _libffCtx.array.Open(baseName+".dat")
+        metaArr = _libffCtx.array.Open(baseName+".meta")
 
         shape = pickle.loads(metaArr.Read())
-
-        distArr = cls(backingArr, metaArr, shape)
+        distArr = cls(dataArr, metaArr, shape)
 
         return distArr
 

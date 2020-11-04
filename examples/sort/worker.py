@@ -38,10 +38,11 @@ def printCSV(pr, path):
         f.write(result)
 
 
-def sortPartial(event):
+def sortPartial(event, ctx):
     # Temporary limitation for testing
-    if event['arrType'] != 'file':
-        return { "error" : "Function currently only supports file distributed arrays" }
+    # if event['arrType'] != 'file':
+    #     return { "error" : "Function currently only supports file distributed arrays" }
+    pylibsort.ConfigureBackend('file', ctx)
 
     refs = pylibsort.getPartRefs(event)
     rawBytes = pylibsort.readPartRefs(refs)
@@ -75,7 +76,8 @@ def selfTest():
 
     with tempfile.TemporaryDirectory() as tDir:
         tDir = pathlib.Path(tDir)
-        pylibsort.SetDistribMount(tDir)
+        libffCtx = libff.invoke.RemoteCtx(libff.array.ArrayStore('file', tDir), None)
+        pylibsort.ConfigureBackend('file', libffCtx)
 
         inArrName = "faasSortTestIn"
         outArrName = "faasSortTestOut"
@@ -110,13 +112,13 @@ def selfTest():
         if doProfile:
             pr = cProfile.Profile()
             pr.enable()
-            resp = sortPartial(req)
+            resp = sortPartial(req, libffCtx)
             pr.disable()
             printCSV(pr, "./faas{}b.csv".format(width))
             pr.dump_stats("./faas{}b.prof".format(width))
         else:
             start = time.time()
-            resp = sortPartial(req)
+            resp = sortPartial(req, libffCtx)
             print(time.time() - start)
 
         if resp['error'] is not None:
@@ -140,66 +142,17 @@ def selfTest():
     print("PASS")
 
 
-def directInvoke(arrMnt):
-    """Call this to directly invoke the function from the command line instead
-    of through a FaaS provider, it expects the arguments to be in JSON, they
-    are read from stdin. Function returns when stdin is closed."""
-
-    pylibsort.SetDistribMount(arrMnt)
-
-    for rawCmd in sys.stdin:
-        try:
-            cmd = json.loads(rawCmd)
-        except json.decoder.JSONDecodeError as e:
-            err = "Failed to parse command (must be valid JSON): " + str(e)
-            print(json.dumps({ "error" : err }), flush=True)
-            continue
-
-        resp = None
-        if doProfile:
-            pr = cProfile.Profile()
-            pr.enable()
-            resp = sortPartial(cmd)
-            pr.disable()
-            printCSV(pr, "./faas{}.csv".format(cmd['output']))
-            pr.dump_stats("./faas{}.prof".format(cmd['output']))
-        else:
-            resp = sortPartial(cmd)
-
-        print(json.dumps(resp), flush=True)
-
-
-def libffInvoke():
-    """Use this as main when you are using libff.invoke to invoke the sort.
-    See libff.invoke documentation for how this works"""
-
+def libffProcessInvoke():
+    """Use this as main when you are using libff.invoke to invoke the sort as a
+    remote process (ProcessRemoteFunc).  See libff.invoke documentation for how
+    this works"""
     libff.invoke.RemoteProcessServer({"sortPartial" : sortPartial}, sys.argv[1:])
 
 
-def LibffInvokeRegister(mnt):
-    # This is probably redundant with the caller, but it shouldn't break
-    # anything. Until we get a more OOP version of libff.array, we're stuck
-    # with this.
-    pylibsort.SetDistribMount(mnt)
-
+def LibffInvokeRegister():
     return {"sortPartial" : sortPartial}
-
-
-# @profile
-def testGenerate():
-    # sz = 256*1024*1024
-    sz = 1024*1024
-    testIn = pylibsort.generateInputs(sz)
-
-    start = time.time()
-    ints = pylibsort.bytesToInts(testIn)
-    print(time.time() - start)
-    # with tempfile.TemporaryFile() as f:
-    #     f.write(testIn[:])
 
 
 if __name__ == "__main__":
     # selfTest()
-    libffInvoke()
-    # directInvoke()
-    # testGenerate()
+    libffProcessInvoke()

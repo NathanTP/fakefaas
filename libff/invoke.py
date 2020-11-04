@@ -100,6 +100,8 @@ class ProcessRemoteFunc(RemoteFunc):
             else:
                 self.proc = sp.Popen(["python3", str(packagePath)], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
 
+            _runningFuncProcesses[packagePath] = self.proc
+
         self.fname = funcName
         self.packagePath = packagePath
         self.ctx = context

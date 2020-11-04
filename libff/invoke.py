@@ -86,11 +86,19 @@ class DirectRemoteFunc(RemoteFunc):
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context):
-        arrayMnt = context.array.FileMount
+        if context.array is not None:
+            arrayMnt = context.array.FileMount
+        else:
+            arrayMnt = ""
+
         if packagePath in _runningFuncProcesses:
             self.proc = _runningFuncProcesses[packagePath]
         else:
-            self.proc = sp.Popen(["python3", str(packagePath), '-m', arrayMnt], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+            if context.array is not None:
+                arrayMnt = context.array.FileMount
+                self.proc = sp.Popen(["python3", str(packagePath), '-m', arrayMnt], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+            else:
+                self.proc = sp.Popen(["python3", str(packagePath)], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
 
         self.fname = funcName
         self.packagePath = packagePath
@@ -139,7 +147,11 @@ def RemoteProcessServer(funcs, serverArgs):
     parser.add_argument("-k", "--kv", action="store_true", help="Enable the key-value store")
     args = parser.parse_args(serverArgs)
 
-    arrStore = array.ArrayStore('file', args.mount)
+    if args.mount is not None:
+        arrStore = array.ArrayStore('file', args.mount)
+    else:
+        arrStore = None
+
     objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
     ctx = RemoteCtx(arrStore, objStore)
 

@@ -54,6 +54,9 @@ class GlobalImport:
         globals().update(self.collector)
 
 class Model:
+    """This is a generic interface to a model, it should be wrapped in a
+    ModelWorker.remoteModel in order to interact with libff"""
+
     @staticmethod
     def imports():
         with GlobalImport() as gi:
@@ -107,7 +110,7 @@ class Model:
         return inStr
 
 
-def LibffInvokeRegister(mnt):
+def LibffInvokeRegister():
     """Callback required by libff.invoke in DirectRemoteFunc mode"""
 
     # Need to be able to import from the serve directory (where ModelWorker is defined)
@@ -119,6 +122,7 @@ def LibffInvokeRegister(mnt):
 
 
 if __name__ == "__main__":
+    """Used when invoked as a libff.invoke.ProcessRemoteFunc"""
     import libff.invoke
 
     # Need to be able to import from the serve directory (where ModelWorker is defined)

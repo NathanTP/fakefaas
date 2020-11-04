@@ -43,6 +43,7 @@ def main(args):
         objStore = ff.kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
     else:
         objStore = ff.kv.Local(copyObjs=False, serialize=False)
+    libffCtx = libff.invoke.RemoteCtx(None, objStore)
 
     if args.cpu:
         provider = "CPUExecutionProvider"
@@ -54,9 +55,9 @@ def main(args):
     with ff.timer("init", times):
         modelTimes = {}
         if args.remote:
-            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "process")
+            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "process", libffCtx)
         else:
-            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "direct")
+            state = ModelWorker.remoteModel(modelDir / args.model / (args.model + ".py"), provider, "direct", libffCtx)
 
     with ff.timer("run", times):
         runTest(state, objStore, times, niter=args.niter)

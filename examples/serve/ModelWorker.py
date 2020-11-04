@@ -6,18 +6,18 @@ import libff.invoke
 class remoteModel():
     """Used by a client wishing to interact with remote model functions"""
 
-    def __init__(self, modelPath, provider, mode):
+    def __init__(self, modelPath, provider, mode, libffCtx):
         self.provider = provider
         if mode == 'direct':
-            self._pre = libff.invoke.DirectRemoteFunc(modelPath, "pre", None)
-            self._run = libff.invoke.DirectRemoteFunc(modelPath, "run", None)
-            self._post = libff.invoke.DirectRemoteFunc(modelPath, "post", None)
-            self._inputs = libff.invoke.DirectRemoteFunc(modelPath, "inputs", None)
+            self._pre = libff.invoke.DirectRemoteFunc(modelPath, "pre", libffCtx)
+            self._run = libff.invoke.DirectRemoteFunc(modelPath, "run", libffCtx)
+            self._post = libff.invoke.DirectRemoteFunc(modelPath, "post", libffCtx)
+            self._inputs = libff.invoke.DirectRemoteFunc(modelPath, "inputs", libffCtx)
         else:
-            self._pre = libff.invoke.ProcessRemoteFunc(modelPath, "pre", "")
-            self._run = libff.invoke.ProcessRemoteFunc(modelPath, "run", "")
-            self._post = libff.invoke.ProcessRemoteFunc(modelPath, "post", "")
-            self._inputs = libff.invoke.ProcessRemoteFunc(modelPath, "inputs", "")
+            self._pre = libff.invoke.ProcessRemoteFunc(modelPath, "pre", libffCtx)
+            self._run = libff.invoke.ProcessRemoteFunc(modelPath, "run", libffCtx)
+            self._post = libff.invoke.ProcessRemoteFunc(modelPath, "post", libffCtx)
+            self._inputs = libff.invoke.ProcessRemoteFunc(modelPath, "inputs", libffCtx)
         
     def pre(self, name, inputKey=None):
         if inputKey is None:
@@ -74,7 +74,7 @@ class remoteModel():
 
    
 class modelServer():
-    """Used by models wishing to be run as ProcessRemoteFunctions."""
+    """Used by models wishing to be run as libff RemoteFunctions."""
     def __init__(self, modelClass):
         self.times = {}
 
@@ -93,10 +93,8 @@ class modelServer():
             libff.mergeTimers(self.times, cpuTimes, "cpuModel.")
             libff.mergeTimers(self.times, gpuTimes, "gpuModel.")
 
-        self.objStore = libff.kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
 
-
-    def reportStats(self, req):
+    def reportStats(self, req, ctx):
         # XXX We should really figure out a more generic way of handling this,
         # libff has its own reportStats. Ideally we'd not duplicate that
         # effort.
@@ -106,37 +104,37 @@ class modelServer():
         return resp
 
 
-    def pre(self, req):
+    def pre(self, req, ctx):
         with libff.timer("pre", self.times):
             curModel = self.modelStates[req['provider']]
-            funcInputs = self.objStore.get(req['inputKey'], self.times)
+            funcInputs = ctx.kv.get(req['inputKey'], self.times)
             funcOut = curModel.pre(funcInputs)
-            self.objStore.put(req['outputKey'], funcOut, self.times)
+            ctx.kv.put(req['outputKey'], funcOut, self.times)
         return { "error" : None }
 
 
-    def run(self, req):
+    def run(self, req, ctx):
         with libff.timer("run", self.times):
             curModel = self.modelStates[req['provider']]
-            funcInputs = self.objStore.get(req['inputKey'], self.times)
+            funcInputs = ctx.kv.get(req['inputKey'], self.times)
             funcOut = curModel.run(funcInputs)
-            self.objStore.put(req['outputKey'], funcOut, self.times)
+            ctx.kv.put(req['outputKey'], funcOut, self.times)
         return { "error" : None }
 
 
-    def post(self, req):
+    def post(self, req, ctx):
         with libff.timer("post", self.times):
             curModel = self.modelStates[req['provider']]
-            funcInputs = self.objStore.get(req['inputKey'], self.times)
+            funcInputs = ctx.kv.get(req['inputKey'], self.times)
             funcOut = curModel.post(funcInputs)
-            self.objStore.put(req['outputKey'], funcOut, self.times)
+            ctx.kv.put(req['outputKey'], funcOut, self.times)
         return { "error" : None }
 
 
-    def inputs(self, req):
+    def inputs(self, req, ctx):
         curModel = self.modelStates[req['provider']]
         funcOut = curModel.inputs()
-        self.objStore.put(req['outputKey'], funcOut, self.times)
+        ctx.kv.put(req['outputKey'], funcOut, self.times)
         return { "error" : None }
 
 

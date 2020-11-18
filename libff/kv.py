@@ -94,7 +94,10 @@ class Local:
 
     def get(self, k, profile=None):
         with timer("read", profile):
-            raw = self.store[k]
+            try:
+                raw = self.store[k]
+            except KeyError:
+                return None
 
         with timer("deserialize", profile):
             if self.serialize:

@@ -3,7 +3,7 @@
 
 __global__ void doublifyKern(float *a)
 {
-    int idx = threadIdx.x + threadIdx.y*4;
+    int idx = threadIdx.x + blockIdx.x*4;
     a[idx] *= 2;
 }
 
@@ -56,6 +56,5 @@ extern "C"
 void doublify(int grid, int block, void **bufs)
 {
     float *a = (float*)bufs[0];
-    /* float *a = (float*)bufs; */
     doublifyKern<<<grid,block>>>(a);
 }

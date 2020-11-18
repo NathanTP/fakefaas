@@ -155,7 +155,8 @@ def kaasInvoke():
     print(a)
 
     inputs = [ kaasBuf(a) ]
-    func.Invoke(1, 4, inputs, [0])
+    # func.Invoke(1, 4, inputs, [0])
+    func.Invoke(4, 4, inputs, [0])
 
     print("Doubled:")
     print(a)

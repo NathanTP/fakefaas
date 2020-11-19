@@ -19,19 +19,20 @@ def getCtx(remote=False):
     return libff.invoke.RemoteCtx(None, objStore)
 
 
-def testDirect():
+def testDoublify():
     libffCtx = getCtx(remote=False)
 
     testArray = np.random.randn(4,4).astype(np.float32)
     print("Orig:")
     print(testArray)
 
-    testBytes = bytearray(testArray)
+    testBytes = memoryview(testArray)
     libffCtx.kv.put("input", testBytes)
+    print(testBytes.nbytes)
 
     # doublify is in-place
-    inputs  = [ kaas.bufferSpec('input', len(testBytes)) ]
-    outputs = [ kaas.bufferSpec('input', len(testBytes)) ]
+    inputs  = [ kaas.bufferSpec('input', testBytes.nbytes) ]
+    outputs = [ kaas.bufferSpec('input', testBytes.nbytes) ]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
             'doublify',
@@ -52,5 +53,55 @@ def testDirect():
     print(doubledArray)
 
 
+def testDotProd():
+    nElem = 1024
+    # nElem = 32 
+    nByte = nElem*4
+
+    libffCtx = getCtx(remote=False)
+
+    aArr = np.arange(0,nElem, dtype=np.uint32)
+    bArr = np.arange(nElem,nElem*2, dtype=np.uint32)
+    arrLen = np.uint64(nElem)
+
+    # Getting zcopy bytes out of numpy arrays is tricky. Even these memoryviews
+    # don't act like bytes (len returns nelem, not nbyte). You have to use
+    # buf.nbytes to get the byte length. array.tobytes(), bytes(array), and
+    # bytebuffer(array) give copies.
+    aBytes = memoryview(aArr)
+    bBytes = memoryview(bArr)
+    lenBytes = memoryview(arrLen)
+
+    libffCtx.kv.put('a',   aBytes)
+    libffCtx.kv.put('b',   bBytes)
+    libffCtx.kv.put('len', lenBytes)
+    
+    aBuf = kaas.bufferSpec('a', nByte)
+    bBuf = kaas.bufferSpec('b', nByte)
+    lenBuf = kaas.bufferSpec('len', lenBytes.nbytes)
+    prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
+    cBuf = kaas.bufferSpec('c', 8)
+
+    prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
+            'prod',
+            1, nElem,
+            inputs=[aBuf, bBuf, lenBuf],
+            outputs=[prodOutBuf])
+
+    sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
+            'sum',
+            1, nElem // 2,
+            inputs = [prodOutBuf],
+            outputs = [cBuf])
+
+    req = kaas.kaasReq([ prodKern, sumKern ])
+
+    kaas.kaasServe(req.toDict(), libffCtx)
+
+    c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
+    print("Expected: ", np.dot(aArr, bArr))
+    print("Got: ", c)
+
 if __name__ == "__main__":
-   testDirect() 
+   testDotProd()
+   # testDoublify()

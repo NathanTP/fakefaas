@@ -259,6 +259,8 @@ class bufferCache():
         buf.toDevice()
 
         self.bufs[bSpec.name] = buf
+        self.policy.push(buf)
+
         return buf
 
 

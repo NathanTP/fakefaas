@@ -273,7 +273,9 @@ class bufferCache():
             if buf.onDevice:
                 buf.toHost()
             if not buf.ephemeral:
-                self.kv.put(buf.name, buf.hbuf)
+                # Data are stored as numpy arrays because memoryviews can't be
+                # pickled. This should still be zero copy.
+                self.kv.put(buf.name, np.asarray(buf.hbuf))
             buf.dirty = False
 
 

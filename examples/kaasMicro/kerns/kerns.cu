@@ -25,6 +25,7 @@ __global__ void sumKern(uint32_t* input, uint32_t *out)
 
         step_size <<= 1; 
         number_of_threads >>= 1;
+        __syncthreads();
     }
 
     if(tid == 0) {

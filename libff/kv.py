@@ -56,7 +56,7 @@ class Redis:
             raw = self.handle.get(k)
 
         with timer("deserialize", profile):
-            if self.serialize:
+            if self.serialize and raw is not None:
                 return pickle.loads(raw)
             else:
                 return raw

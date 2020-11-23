@@ -5,6 +5,7 @@ import abc
 import importlib.util
 import argparse
 import json
+import traceback
 from . import array
 from . import kv 
 
@@ -67,7 +68,12 @@ class DirectRemoteFunc(RemoteFunc):
         if packagePath in _importedFuncPackages:
             self.funcs = _importedFuncPackages[packagePath]
         else:
-            spec = importlib.util.spec_from_file_location(packagePath.stem, packagePath)
+            # The name is only relevant if the file is a full module (in which
+            # you have to import the full "module.file" name). If the file
+            # isn't part of a module, the name is not relevant.
+            name = packagePath.parent.stem + "." + packagePath.stem
+            
+            spec = importlib.util.spec_from_file_location(name, packagePath)
             package = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(package)
             self.funcs = package.LibffInvokeRegister()
@@ -98,7 +104,10 @@ class ProcessRemoteFunc(RemoteFunc):
                 arrayMnt = context.array.FileMount
                 self.proc = sp.Popen(["python3", str(packagePath), '-m', arrayMnt], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
             else:
-                self.proc = sp.Popen(["python3", str(packagePath)], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+                cmd = ["python3", '-m', str(packagePath.name)]
+                self.proc = sp.Popen(["python3", '-m', str(packagePath.name)],
+                        stdin=sp.PIPE, stdout=sp.PIPE, text=True,
+                        cwd=packagePath.parent)
 
             _runningFuncProcesses[packagePath] = self.proc
 
@@ -110,6 +119,11 @@ class ProcessRemoteFunc(RemoteFunc):
         req = { "command" : "invoke",
                 "fName" : self.fname,
                 "fArg" : arg }
+
+        # For some reason this masks some errors (e.g. failed Redis connection). I can't figure out why.
+        # if self.proc.poll() is None:
+        #     out, err = self.proc.communicate()
+        #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
 
         self.proc.stdin.write(json.dumps(req) + "\n")
         self.proc.stdin.flush()
@@ -181,4 +195,5 @@ def RemoteProcessServer(funcs, serverArgs):
             else:
                 _remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
         except Exception as e:
+            traceback.print_exc(file=sys.stderr)
             _remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})

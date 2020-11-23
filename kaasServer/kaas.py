@@ -4,9 +4,22 @@
 # intranode). Eventually it will be its own service because scheduling
 # decisions will be different.
 
+import sys
 import pathlib
 import collections
+import libff as ff
+import libff.invoke
+
+
+serverPackage = pathlib.Path(__file__).resolve().parent
+
+# Python's module system is garbage, I'm sure there's a 'right' way to do this
+# but I can't be bothered
+# print(serverPath.parent)
+# sys.path.append(serverPath.parent)
+
 from ._server import *
+
 
 class KaasError(Exception):
     def __init__(self, cause):
@@ -140,6 +153,16 @@ class kaasReq():
                }
 
 
+def getHandle(mode, ctx):
+    """Returns a libff RemoteFunc object representing the KaaS service"""
+    if mode == 'direct':
+        return libff.invoke.DirectRemoteFunc(serverPackage, 'invoke', ctx)
+    elif mode == 'process':
+        return libff.invoke.ProcessRemoteFunc(serverPackage, 'invoke', ctx)
+    else:
+        raise KaasError("Unrecognized execution mode: " + str(mode))
+
+
 def kaasServe(req, ctx):
     # Convert the dictionary req into a kaasReq object
     kReq = kaasReq.fromDict(req)
@@ -153,8 +176,8 @@ def LibffInvokeRegister():
     return { "invoke" : kaasServe }
 
 
-if __name__ == "__main__":
-    """Used when invoked as a libff.invoke.ProcessRemoteFunc"""
-    import libff.invoke
-
-    libff.invoke.RemoteProcessServer({"invoke" : kaasServe}, sys.argv[1:])
+# if __name__ == "__main__":
+#     """Used when invoked as a libff.invoke.ProcessRemoteFunc"""
+#     import libff.invoke
+#
+#     libff.invoke.RemoteProcessServer({"invoke" : kaasServe}, sys.argv[1:])

@@ -8,7 +8,8 @@ import kaasServer as kaas
 import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
-testPath = pathlib.Path(".").resolve()
+testPath = pathlib.Path(__file__).resolve().parent
+
 
 def getCtx(remote=False):
     if remote:
@@ -19,20 +20,18 @@ def getCtx(remote=False):
     return libff.invoke.RemoteCtx(None, objStore)
 
 
-def testDoublify():
-    libffCtx = getCtx(remote=False)
+def testDoublify(mode='direct'):
+    libffCtx = getCtx(remote=True)
+    kaasHandle = kaas.getHandle(mode, libffCtx)
 
-    testArray = np.random.randn(4,4).astype(np.float32)
-    print("Orig:")
-    print(testArray)
+    testArray = np.random.randn(16).astype(np.float32)
+    origArray = testArray.copy()
 
-    testBytes = memoryview(testArray)
-    libffCtx.kv.put("input", testBytes)
-    print(testBytes.nbytes)
+    libffCtx.kv.put("input", testArray)
 
     # doublify is in-place
-    inputs  = [ kaas.bufferSpec('input', testBytes.nbytes) ]
-    outputs = [ kaas.bufferSpec('input', testBytes.nbytes) ]
+    inputs  = [ kaas.bufferSpec('input', testArray.nbytes) ]
+    outputs = [ kaas.bufferSpec('input', testArray.nbytes) ]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
             'doublify',
@@ -44,21 +43,29 @@ def testDoublify():
 
     # This is just for the test, a real system would use libff to invoke the
     # kaas server
-    kaas.kaasServe(req.toDict(), libffCtx)
+    kaasHandle.Invoke(req.toDict())
 
     doubledBytes = libffCtx.kv.get('input')
     doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
 
-    print("Doubled:")
-    print(doubledArray)
+    expect = origArray*2
+    if not np.array_equal(doubledArray, expect):
+        print("FAIL")
+        print("Expected:")
+        print(expect)
+        print("Got:")
+        print(doubledArray)
+    else:
+        print("PASS")
 
 
-def testDotProd():
+def testDotProd(mode='direct'):
     nElem = 1024
     # nElem = 32 
     nByte = nElem*4
 
-    libffCtx = getCtx(remote=False)
+    libffCtx = getCtx(remote=True)
+    kaasHandle = kaas.getHandle(mode, libffCtx)
 
     aArr = np.arange(0,nElem, dtype=np.uint32)
     bArr = np.arange(nElem,nElem*2, dtype=np.uint32)
@@ -68,17 +75,17 @@ def testDotProd():
     # don't act like bytes (len returns nelem, not nbyte). You have to use
     # buf.nbytes to get the byte length. array.tobytes(), bytes(array), and
     # bytebuffer(array) give copies.
-    aBytes = memoryview(aArr)
-    bBytes = memoryview(bArr)
-    lenBytes = memoryview(arrLen)
+    # aBytes = memoryview(aArr)
+    # bBytes = memoryview(bArr)
+    # lenBytes = memoryview(arrLen)
 
-    libffCtx.kv.put('a',   aBytes)
-    libffCtx.kv.put('b',   bBytes)
-    libffCtx.kv.put('len', lenBytes)
+    libffCtx.kv.put('a',   aArr)
+    libffCtx.kv.put('b',   bArr)
+    libffCtx.kv.put('len', arrLen)
     
     aBuf = kaas.bufferSpec('a', nByte)
     bBuf = kaas.bufferSpec('b', nByte)
-    lenBuf = kaas.bufferSpec('len', lenBytes.nbytes)
+    lenBuf = kaas.bufferSpec('len', arrLen.nbytes)
     prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
     cBuf = kaas.bufferSpec('c', 8)
 
@@ -96,12 +103,19 @@ def testDotProd():
 
     req = kaas.kaasReq([ prodKern, sumKern ])
 
-    kaas.kaasServe(req.toDict(), libffCtx)
+    kaasHandle.Invoke(req.toDict())
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
-    print("Expected: ", np.dot(aArr, bArr))
-    print("Got: ", c)
+    expect = np.dot(aArr, bArr)
+    if c != expect:
+        print("Failure:")
+        print("Expected: ", np.dot(aArr, bArr))
+        print("Got: ", c)
+    else:
+        print("PASS")
 
 if __name__ == "__main__":
-   testDotProd()
-   # testDoublify()
+    print("Dot Product Test:") 
+    testDotProd('process')
+    print("Double Test:")
+    testDoublify('process')

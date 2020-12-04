@@ -156,6 +156,7 @@ class kaasReq():
 def getHandle(mode, ctx):
     """Returns a libff RemoteFunc object representing the KaaS service"""
     if mode == 'direct':
+        # return libff.invoke.DirectRemoteFunc(serverPackage / '__init__.py', 'invoke', ctx)
         return libff.invoke.DirectRemoteFunc(serverPackage, 'invoke', ctx)
     elif mode == 'process':
         return libff.invoke.ProcessRemoteFunc(serverPackage, 'invoke', ctx)
@@ -174,10 +175,3 @@ def LibffInvokeRegister():
     """Callback required by libff.invoke in DirectRemoteFunc mode"""
 
     return { "invoke" : kaasServe }
-
-
-# if __name__ == "__main__":
-#     """Used when invoked as a libff.invoke.ProcessRemoteFunc"""
-#     import libff.invoke
-#
-#     libff.invoke.RemoteProcessServer({"invoke" : kaasServe}, sys.argv[1:])

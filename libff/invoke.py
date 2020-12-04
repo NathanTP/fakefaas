@@ -68,12 +68,14 @@ class DirectRemoteFunc(RemoteFunc):
         if packagePath in _importedFuncPackages:
             self.funcs = _importedFuncPackages[packagePath]
         else:
-            # The name is only relevant if the file is a full module (in which
-            # you have to import the full "module.file" name). If the file
-            # isn't part of a module, the name is not relevant.
-            name = packagePath.parent.stem + "." + packagePath.stem
-            
+            name = packagePath.stem
+            if packagePath.is_dir():
+                packagePath = packagePath / "__init__.py"
+
             spec = importlib.util.spec_from_file_location(name, packagePath)
+            if spec is None:
+                raise RuntimeError("Failed to load function from " + str(packagePath))
+
             package = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(package)
             self.funcs = package.LibffInvokeRegister()

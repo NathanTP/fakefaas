@@ -7,6 +7,8 @@
 import sys
 import pathlib
 import collections
+from pprint import pprint
+
 import libff as ff
 import libff.invoke
 
@@ -76,6 +78,24 @@ class bufferSpec():
         return self.name == other.name
 
 
+# XXX get to this later
+# class scalarSpec():
+#     def __init__(self, t, val):
+#         if t not in ['f', 'd', 'Q']:
+#             raise KaasError("Type " + str(t) + " not permitted for scalars")
+#         self.t = t
+#
+#         if t == 'f':
+#             cval = ctypes.c_float(val)
+#         elif t == 'd':
+#             cval = ctypes.c_double(val)
+#         else:
+#             cval == ctypes.c_uint64(val)
+#
+#         # We let python handle the sanity checking on the server side
+#         self.val = cval
+
+
 class kernelSpec():
     """Kernel specs describe a kernel for a particular request."""
     @classmethod
@@ -90,19 +110,22 @@ class kernelSpec():
 
         return cls(d['library'],
                    d['kernel'],
-                   d['nGrid'],
-                   d['nBlock'],
+                   tuple(d['gridDim']),
+                   tuple(d['blockDim']),
+                   d['sharedSize'],
                    inputs,
                    temps,
                    outputs)
 
-    def __init__(self, library, kernel, nGrid, nBlock, inputs=[], temps=[], outputs=[]):
+
+    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, inputs=[], temps=[], outputs=[]):
         self.libPath = pathlib.Path(library).resolve()
         self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
         
-        self.nGrid = nGrid
-        self.nBlock = nBlock
+        self.gridDim = gridDim
+        self.blockDim = blockDim
+        self.sharedSize = sharedSize 
 
         self.inputs = inputs 
         self.temps = temps 
@@ -120,8 +143,9 @@ class kernelSpec():
         d = {}
         d['library'] = str(self.libPath)
         d['kernel'] = self.kernel
-        d['nGrid'] = self.nGrid
-        d['nBlock'] = self.nBlock
+        d['gridDim'] = self.gridDim
+        d['blockDim'] = self.blockDim
+        d['sharedSize'] = self.sharedSize
 
         d['inputs'] = [ b.toDict() for b in self.inputs ]
         d['temps'] = [ b.toDict() for b in self.temps ]
@@ -129,9 +153,6 @@ class kernelSpec():
         return d
 
     def __eq__(self, other):
-        if not isinstance(other, kernelSpec):
-            return NotImplemented
-
         return self.name == other.name
 
 

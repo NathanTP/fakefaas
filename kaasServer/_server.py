@@ -8,6 +8,7 @@ import numpy as np
 import pathlib
 import collections
 import logging
+from pprint import pprint
 
 import libff as ff
 import libff.kv
@@ -112,19 +113,18 @@ class kaasBuf():
 
 class kaasFunc():
     def __init__(self, library, fName, nBuf):
-        self.argType = ctypes.c_void_p * nBuf 
+        self.func = library.get_function(fName)
+        self.func.prepare(["P"]*nBuf)
 
         self.fName = fName
         self.lib = library 
-        self.func = getattr(self.lib, fName)
-        self.func.argtypes = [ ctypes.c_int, ctypes.c_int, self.argType ]
 
 
     def __str__(self):
         return self.func
 
 
-    def Invoke(self, gridDim, blkDim, bufs):
+    def Invoke(self, bufs, gridDim, blockDim, sharedSize):
         """Invoke the func with the provided diminsions:
             - bufs is a list of kaasBuf objects
             - outs is a list of indexes of bufs to copy back to host memory
@@ -135,10 +135,10 @@ class kaasFunc():
             if not b.onDevice:
                 raise RuntimeError("Provided buffer was not resident on the device")
 
-            dAddrs.append(ctypes.cast(int(b.dbuf), ctypes.c_void_p))
+            dAddrs.append(b.dbuf)
 
-        logging.debug("Invoking " + self.fName)
-        self.func(gridDim, blkDim, self.argType(*dAddrs))
+        logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName, [ b.name for b in bufs]))
+        self.func.prepared_call(gridDim, blockDim, *dAddrs, shared_size=sharedSize)
 
 
 class kernelCache():
@@ -149,10 +149,9 @@ class kernelCache():
     def get(self, spec):
         if spec.name not in self.kerns:
             if spec.libPath not in self.libs:
-                self.libs[spec.libPath] = ctypes.cdll.LoadLibrary(spec.libPath)
+                self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
 
             nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)
-
             self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, nBuf)
 
         return self.kerns[spec.name]
@@ -263,11 +262,12 @@ class bufferCache():
                 logging.debug("Loading (new buffer): " + bSpec.name)
                 buf = kaasBuf.fromSpec(bSpec)
             else:
-                logging.debug("Loading from KV: " + bSpec.name)
                 raw = self.kv.get(bSpec.name)
                 if raw is None:
+                    logging.debug("Loading (new buffer): " + bSpec.name)
                     buf = kaasBuf.fromSpec(bSpec)
                 else:
+                    logging.debug("Loading from KV: " + bSpec.name)
                     buf = kaasBuf.fromSpec(bSpec, raw)
 
         self._makeRoom(buf)
@@ -333,7 +333,7 @@ def kaasServeInternal(req, ctx):
         temps = [ bCache.load(b) for b in kSpec.temps ]
         outputs = [ bCache.load(b) for b in kSpec.uniqueOutputs ]
 
-        kern.Invoke(kSpec.nGrid, kSpec.nBlock, inputs + temps + outputs)
+        kern.Invoke(inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
 
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.

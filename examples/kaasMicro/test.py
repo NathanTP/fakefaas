@@ -7,33 +7,19 @@ import ctypes
 import ctypes.util
 import pathlib
 
-class KaasError(Exception):
-    def __init__(self, cause):
-        self.cause = cause
 
-
-    def __str__(self):
-        return self.cause
-
-
-# Example of using pyCuda to run a kernel. I can't figure out how to get pyCuda
-# to load from a shared library though, it seems to require jitting the
-# kernels...
-def pyCudaNative():
+def test(func):
+    np.random.seed(0)
     a = np.random.randn(4,4)
     a = a.astype(np.float32)
     a_gpu = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_gpu, a)
 
-    mod = SourceModule("""
-      __global__ void doublify(float *a)
-      {
-	int idx = threadIdx.x + threadIdx.y*4;
-	a[idx] *= 2;
-      }
-      """)
-    func = mod.get_function("doublify")
-    func(a_gpu, block=(4,4,1))
+    # func.call(a_gpu, block=(4,4,1))
+    grid = (1, 1)
+    block = (4, 4, 1)
+
+    func.prepared_call(grid, block, a_gpu)
 
     a_doubled = np.empty_like(a)
     cuda.memcpy_dtoh(a_doubled, a_gpu)
@@ -41,129 +27,75 @@ def pyCudaNative():
     print(a)
 
 
-class kaasBuf():
-    def __init__(self, src, size=None):
-        """A kaasBuffer represnts a binary data buffer managed by the kaas
-        system, it can be either on the device or on the host. If src is
-        provided, it will be used as the buffer, otherwise size will be used to
-        represent a zeroed buffer. kaasBuffers do not automatically manage
-        consistency, it is up to the user to decide when and how to synchronize
-        host and device memory.
-        """
-        if src is not None:
-            self.dbuf = None
-            self.hbuf = memoryview(src)
-            self.size = self.hbuf.nbytes
-            self.onDevice = False
-        else:
-            self.dbuf = None
-            self.hbuf = None
-            self.size = size
-            self.onDevice = False
+def getCubin():
+    mod = cuda.module_from_file("kerns/kerns.cubin")
+    func = mod.get_function("doublifyKern")
+    func.prepare("P")
+    return func
 
 
-    def setHostBuffer(self, newBuf):
-        """Allows changing the host-side memory allocated to this buffer. This
-        is useful for zero copy data transfers. The newBuf must be bigger or
-        equal to the kaasBuf size. If newBuf is None, the kaasBuf will drop its
-        reference to any host buffer, allowing host memory to be reclaimed."""
-        if newBuf is None:
-            self.hbuf = None
-        else:
-            newBuf = memoryview(newBuf)
-            if newBuf.nbytes < self.size:
-                raise KaasError("New buffer is not big enough")
+def getProdJit():
+    mod = SourceModule("""
+        #include <stdint.h>
+        __global__ void prodKern(uint32_t *v0, uint32_t *v1, uint32_t *vout, uint64_t *len)
+        {
+            int id = blockIdx.x*blockDim.x+threadIdx.x;
+            if (id < *len) {
+                vout[id] = v0[id] * v1[id];    
+            }
+        }
+        """, options=["-std=c++14"])
 
-            self.hbuf = newBuf
+    func = mod.get_function("prodKern")
+    func.prepare(["P"]*4)
+    return func
 
+def getJitted():
+    mod = SourceModule("""
+      #include <stdint.h>
+      __global__ void doublify(float *a, float *b)
+      {
+	int idx = threadIdx.x + threadIdx.y*4;
+	a[idx] *= 2;
+      }
+      """)
+    func = mod.get_function("doublify")
+    func.prepare(["P"])
+    return func
 
-    def toDevice(self):
-        """Place the buffer onto the device if it is not already there.  If no
-        host buffer is set, zeroed device memory will be allocated."""
-        if self.onDevice:
-            return
-        else:
-            self.dbuf = cuda.mem_alloc(self.size)
+def testProd():
+    f = getProdJit()
 
-            if self.hbuf is None:
-                cuda.memset_d8(self.dbuf, 0, self.size)
-            else:
-                cuda.memcpy_htod(self.dbuf, self.hbuf)
+    np.random.seed(0)
+    a = np.random.randint(0, 256, size=8, dtype=np.uint32)
+    b = np.random.randint(0, 256, size=8, dtype=np.uint32)
 
-            self.onDevice = True
+    a_d = cuda.mem_alloc(a.nbytes)
+    cuda.memcpy_htod(a_d, a)
+    b_d = cuda.mem_alloc(b.nbytes)
+    cuda.memcpy_htod(b_d, b)
+    c_d = cuda.mem_alloc(b.nbytes)
+    len_d = cuda.mem_alloc(8)
+    cuda.memcpy_htod(len_d, ctypes.c_uint64(8))
 
-    def fromDevice(self):
-        """Copy data from the device (if present). If the kaasBuf does not have
-        a host buffer set, one will be allocated, otherwise the currently
-        configured host buffer will be overwritten with the device buffer
-        data."""
-        if not self.onDevice:
-            return
-        else:
-            if self.hbuf is None:
-                self.hbuf = memoryview(bytearray(self.size))
+    grid = (1, 1)
+    block = (8,1,1)
 
-            cuda.memcpy_dtoh(self.hbuf, self.dbuf)
+    bufs = [a_d, b_d, c_d, len_d]
 
+    f.prepared_call(grid, block, *bufs, shared_size=0)
 
-    def freeDevice(self):
-        """Free any memory that is allocated on the device."""
-        if not self.onDevice:
-            return
-        else:
-            self.dbuf.free()
-            self.dbuf = None
-            self.onDevice = False
-
-
-class kaasFunc():
-    def __init__(self, libPath, fName, nBuf):
-        self.argType = ctypes.c_void_p * nBuf 
-
-        self.lib = ctypes.cdll.LoadLibrary(libPath)
-        self.func = getattr(self.lib, fName)
-        self.func.argtypes = [ ctypes.c_int, ctypes.c_int, self.argType ]
-
-    def Invoke(self, gridDim, blkDim, bufs, outs):
-        """Invoke the func with the provided diminsions:
-            - bufs is a list of kaasBuf objects
-            - outs is a list of indexes of bufs to copy back to host memory
-              after invocation
-        """
-        dAddrs = []
-        for b in bufs:
-            b.toDevice()
-            dAddrs.append(ctypes.cast(int(b.dbuf), ctypes.c_void_p))
-
-        self.func(gridDim, blkDim, self.argType(*dAddrs))
-
-        for outX in outs:
-            bufs[outX].fromDevice()
-
-
-# Using ctypes to call a wrapper. In theory I guess I could generate the
-# wrapper in ctypes and JIT it but meh.
-def kaasInvoke():
-    packagePath = pathlib.Path(__file__).parent
-    libPath = packagePath / "kerns" / "libkaasMicro.so"
-
-    func = kaasFunc(libPath, 'doublify', 1)
-
-    a = np.random.randn(4,4)
-    a = a.astype(np.float32)
-    print("Orig:")
+    c_prod = np.empty_like(a)
+    cuda.memcpy_dtoh(c_prod, c_d)
     print(a)
+    print(b)
+    print(a*b)
+    print(c_prod)
 
-    inputs = [ kaasBuf(a) ]
-    # func.Invoke(1, 4, inputs, [0])
-    func.Invoke(4, 4, inputs, [0])
 
-    print("Doubled:")
-    print(a)
+testProd()
+# cuF = getCubin()
+# jitF = getJitted()
 
-    # Cleanup (free any memory)
-    for i in inputs:
-        i.freeDevice()
-        i.setHostBuffer(None)
-
-kaasInvoke()
+# test(cuF)
+# test(jitF)

@@ -1,4 +1,6 @@
 import pathlib
+import math
+from pprint import pprint
 
 import libff as ff
 import libff.kv
@@ -21,7 +23,7 @@ def getCtx(remote=False):
 
 
 def testDoublify(mode='direct'):
-    libffCtx = getCtx(remote=True)
+    libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
 
     testArray = np.random.randn(16).astype(np.float32)
@@ -33,9 +35,9 @@ def testDoublify(mode='direct'):
     inputs  = [ kaas.bufferSpec('input', testArray.nbytes) ]
     outputs = [ kaas.bufferSpec('input', testArray.nbytes) ]
 
-    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
-            'doublify',
-            4, 4,
+    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+            'doublifyKern',
+            (1,1), (16,1,1),
             inputs=inputs,
             outputs=outputs)
 
@@ -47,6 +49,8 @@ def testDoublify(mode='direct'):
 
     doubledBytes = libffCtx.kv.get('input')
     doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
+
+    libffCtx.kv.delete("input") 
 
     expect = origArray*2
     if not np.array_equal(doubledArray, expect):
@@ -64,20 +68,12 @@ def testDotProd(mode='direct'):
     # nElem = 32 
     nByte = nElem*4
 
-    libffCtx = getCtx(remote=True)
+    libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
 
     aArr = np.arange(0,nElem, dtype=np.uint32)
     bArr = np.arange(nElem,nElem*2, dtype=np.uint32)
     arrLen = np.uint64(nElem)
-
-    # Getting zcopy bytes out of numpy arrays is tricky. Even these memoryviews
-    # don't act like bytes (len returns nelem, not nbyte). You have to use
-    # buf.nbytes to get the byte length. array.tobytes(), bytes(array), and
-    # bytebuffer(array) give copies.
-    # aBytes = memoryview(aArr)
-    # bBytes = memoryview(bArr)
-    # lenBytes = memoryview(arrLen)
 
     libffCtx.kv.put('a',   aArr)
     libffCtx.kv.put('b',   bArr)
@@ -89,15 +85,15 @@ def testDotProd(mode='direct'):
     prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
     cBuf = kaas.bufferSpec('c', 8)
 
-    prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
-            'prod',
-            1, nElem,
+    prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+            'prodKern',
+            (1,1), (nElem,1,1),
             inputs=[aBuf, bBuf, lenBuf],
             outputs=[prodOutBuf])
 
-    sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.so',
-            'sum',
-            1, nElem // 2,
+    sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+            'sumKern',
+            (1,1), (nElem // 2,1,1),
             inputs = [prodOutBuf],
             outputs = [cBuf])
 
@@ -106,6 +102,12 @@ def testDotProd(mode='direct'):
     kaasHandle.Invoke(req.toDict())
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
+
+    libffCtx.kv.delete("a")
+    libffCtx.kv.delete("b")
+    libffCtx.kv.delete("len")
+    libffCtx.kv.delete("c")
+
     expect = np.dot(aArr, bArr)
     if c != expect:
         print("Failure:")
@@ -114,8 +116,85 @@ def testDotProd(mode='direct'):
     else:
         print("PASS")
 
+
+def getArr(path):
+    aDim = np.fromfile(path, dtype=np.uint32, count=2)
+    aDat = np.fromfile(path, dtype=np.float32, offset=8, count=(aDim[0]*aDim[1]))
+    # the .mtx files from this example are column major for some reason
+    aDat = aDat.reshape(aDim[0], aDim[1], order="F")
+    return aDat
+
+
+def testMatMul(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.getHandle(mode, libffCtx)
+
+    # arrA = getArr('data/a_3_3.mtx')
+    # arrB = getArr('data/b_3_2.mtx')
+    arrA = getArr('data/a_32_32.mtx')
+    arrB = getArr('data/b_32_32.mtx')
+    dims = np.asarray(list(arrA.shape) + list(arrB.shape), dtype=np.uint64)
+
+    libffCtx.kv.put('dims', dims)
+    libffCtx.kv.put("A", arrA)
+    libffCtx.kv.put("B", arrB)
+
+    aBuf = kaas.bufferSpec('A', arrA.nbytes)
+    bBuf = kaas.bufferSpec('B', arrB.nbytes)
+    dimBuf = kaas.bufferSpec("dims", dims.nbytes)
+
+    # C is aRows x bCols
+    cSize = arrA.shape[0]*arrB.shape[1]*4
+    cBuf = kaas.bufferSpec('C', cSize)
+
+    threadBlock = 32
+    gridDim = (math.ceil(arrB.shape[0] / threadBlock), math.ceil(arrA.shape[0] / threadBlock), 1)
+    blockDim = (threadBlock, threadBlock, 1)
+    sharedSize = 2 * blockDim[0] * blockDim[1]
+
+    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+        'matmulKern',
+        gridDim, blockDim, sharedSize=sharedSize,
+        inputs = [dimBuf, aBuf, bBuf],
+        outputs = [cBuf])
+
+    req = kaas.kaasReq([ kern ])
+
+    kaasHandle.Invoke(req.toDict())
+
+    cArr = np.frombuffer(libffCtx.kv.get('C'), dtype=np.float32)
+    cArr = cArr.reshape(arrA.shape[0], arrB.shape[1], order='F')
+
+    libffCtx.kv.delete("dims")
+    libffCtx.kv.delete("A")
+    libffCtx.kv.delete("B")
+    libffCtx.kv.delete("C")
+
+    # I'm not sure why the results are different in the LSDs but I assume it's
+    # just different rounding due to the different implementations (operations
+    # on floats are not strictly transitive)
+    cArr = cArr.round(4)
+    npArr = np.matmul(arrA, arrB).round(4)
+    if(not np.array_equal(cArr, npArr)):
+        print("FAIL:")
+        print("A:\n", arrA)
+        print("B:\n", arrB)
+        print("KaaS Result:")
+        print(cArr)
+        print("")
+
+        print("Numpy Result:")
+        print(npArr)
+    else:
+        print("PASS")
+
 if __name__ == "__main__":
-    print("Dot Product Test:") 
-    testDotProd('process')
     print("Double Test:")
     testDoublify('process')
+
+    print("Dot Product Test:") 
+    testDotProd('process')
+
+    print("MatMul Test")
+    # testMatMul('direct')
+    testMatMul('process')

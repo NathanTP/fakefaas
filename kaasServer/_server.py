@@ -7,9 +7,12 @@ import sys
 import numpy as np
 import pathlib
 import collections
+import logging
 
 import libff as ff
 import libff.kv
+
+logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 
 class kaasBuf():
     @classmethod
@@ -71,6 +74,7 @@ class kaasBuf():
         if self.onDevice:
             return
         else:
+            logging.debug("Moving " + self.name + " to device")
             self.dbuf = cuda.mem_alloc(self.size)
 
             if self.hbuf is None:
@@ -80,6 +84,7 @@ class kaasBuf():
 
             self.onDevice = True
 
+
     def toHost(self):
         """Copy data from the device (if present). If the kaasBuf does not have
         a host buffer set, one will be allocated, otherwise the currently
@@ -88,6 +93,7 @@ class kaasBuf():
         if not self.onDevice:
             return
         else:
+            logging.debug("Moving {}b from device (0x{}) ".format(self.size, hex(int(self.dbuf))) + self.name + " to host")
             if self.hbuf is None:
                 self.hbuf = memoryview(bytearray(self.size))
 
@@ -108,13 +114,15 @@ class kaasFunc():
     def __init__(self, library, fName, nBuf):
         self.argType = ctypes.c_void_p * nBuf 
 
+        self.fName = fName
         self.lib = library 
         self.func = getattr(self.lib, fName)
         self.func.argtypes = [ ctypes.c_int, ctypes.c_int, self.argType ]
 
-    
+
     def __str__(self):
         return self.func
+
 
     def Invoke(self, gridDim, blkDim, bufs):
         """Invoke the func with the provided diminsions:
@@ -129,6 +137,7 @@ class kaasFunc():
 
             dAddrs.append(ctypes.cast(int(b.dbuf), ctypes.c_void_p))
 
+        logging.debug("Invoking " + self.fName)
         self.func(gridDim, blkDim, self.argType(*dAddrs))
 
 
@@ -221,6 +230,7 @@ class bufferCache():
         while self.cap - self.size < buf.size:
             # Pull from general pool first, only touch const if you have to
             b = self.policy.pop()
+            logging.debug("Evicting " + b.name)
 
             if b.dirty:
                 b.toHost()
@@ -234,12 +244,15 @@ class bufferCache():
         necessary. If the buffer is already in the cache and dirty, it will be
         written back and re-read (you should probably make sure this doesn't
         happen by flushing when needed)."""
+
         if not bSpec.const and not bSpec.ephemeral:
+            logging.debug("Invalidating: " + bSpec.name)
             # Refetch even if we already have it
             if bSpec.name in self.bufs:
                 self.drop(bSpec.name)
 
         if bSpec.name in self.bufs:
+            logging.debug("Loading from Cache: " + bSpec.name)
             buf = self.bufs[bSpec.name]
 
             # Reset LRU
@@ -247,8 +260,10 @@ class bufferCache():
                 self.policy.remove(buf)
         else:
             if bSpec.ephemeral:
+                logging.debug("Loading (new buffer): " + bSpec.name)
                 buf = kaasBuf.fromSpec(bSpec)
             else:
+                logging.debug("Loading from KV: " + bSpec.name)
                 raw = self.kv.get(bSpec.name)
                 if raw is None:
                     buf = kaasBuf.fromSpec(bSpec)
@@ -323,10 +338,12 @@ def kaasServeInternal(req, ctx):
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.
         for o in kSpec.outputs:
-            bCache.dirty(o.name)
+            if not o.ephemeral:
+                bCache.dirty(o.name)
 
         # Don't bother waiting for the caching policy on temps, they will for
-        # sure never be needed again.
+        # sure never be needed again. In the future we may avoid this to save
+        # on cudaMalloc.
         for t in kSpec.temps:
             bCache.drop(t.name)
 

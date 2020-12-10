@@ -73,22 +73,23 @@ def testDotProd(mode='direct'):
 
     aArr = np.arange(0,nElem, dtype=np.uint32)
     bArr = np.arange(nElem,nElem*2, dtype=np.uint32)
-    arrLen = np.uint64(nElem)
+    # arrLen = np.uint64(nElem)
 
     libffCtx.kv.put('a',   aArr)
     libffCtx.kv.put('b',   bArr)
-    libffCtx.kv.put('len', arrLen)
+    # libffCtx.kv.put('len', arrLen)
     
     aBuf = kaas.bufferSpec('a', nByte)
     bBuf = kaas.bufferSpec('b', nByte)
-    lenBuf = kaas.bufferSpec('len', arrLen.nbytes)
+    # lenBuf = kaas.bufferSpec('len', arrLen.nbytes)
     prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
     cBuf = kaas.bufferSpec('c', 8)
 
     prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
             'prodKern',
             (1,1), (nElem,1,1),
-            inputs=[aBuf, bBuf, lenBuf],
+            literals=[ kaas.literalSpec('Q', nElem) ],
+            inputs=[aBuf, bBuf],
             outputs=[prodOutBuf])
 
     sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
@@ -105,7 +106,7 @@ def testDotProd(mode='direct'):
 
     libffCtx.kv.delete("a")
     libffCtx.kv.delete("b")
-    libffCtx.kv.delete("len")
+    # libffCtx.kv.delete("len")
     libffCtx.kv.delete("c")
 
     expect = np.dot(aArr, bArr)
@@ -189,12 +190,12 @@ def testMatMul(mode='direct'):
         print("PASS")
 
 if __name__ == "__main__":
-    print("Double Test:")
-    testDoublify('process')
+    # print("Double Test:")
+    # testDoublify('process')
 
     print("Dot Product Test:") 
     testDotProd('process')
 
-    print("MatMul Test")
+    # print("MatMul Test")
     # testMatMul('direct')
-    testMatMul('process')
+    # testMatMul('process')

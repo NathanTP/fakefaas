@@ -78,32 +78,35 @@ class bufferSpec():
         return self.name == other.name
 
 
-# XXX get to this later
-# class scalarSpec():
-#     def __init__(self, t, val):
-#         if t not in ['f', 'd', 'Q']:
-#             raise KaasError("Type " + str(t) + " not permitted for scalars")
-#         self.t = t
-#
-#         if t == 'f':
-#             cval = ctypes.c_float(val)
-#         elif t == 'd':
-#             cval = ctypes.c_double(val)
-#         else:
-#             cval == ctypes.c_uint64(val)
-#
-#         # We let python handle the sanity checking on the server side
-#         self.val = cval
+class literalSpec():
+    @classmethod
+    def fromDict(cls, d):
+        return cls(d['type'], d['val'])
+
+    def __init__(self, t, val):
+        """Literals are passed by value to kernsls and can be of several types,
+        defined using the same symbol's as python's struct definition language
+        (see pycuda's docs for function.prepare()). Val must be json
+        serializable and convertable to t."""
+        if t not in ['f', 'd', 'Q']:
+            raise KaasError("Type " + str(t) + " not permitted for scalars")
+        self.t = t
+        self.val = val
+
+    def toDict(self):
+        return { "type" : self.t, "val" : self.val }
 
 
 class kernelSpec():
     """Kernel specs describe a kernel for a particular request."""
     @classmethod
     def fromDict(cls, d):
+        literals = d.get('literals', [])
         inputs = d.get('inputs', [])
         temps = d.get('temps', [])
         outputs = d.get('outputs', [])
 
+        literals  = [ literalSpec.fromDict(l) for l in literals ]
         inputs  = [ bufferSpec.fromDict(b) for b in inputs ]
         temps   = [ bufferSpec.fromDict(b) for b in temps ]
         outputs = [ bufferSpec.fromDict(b) for b in outputs ]
@@ -113,12 +116,13 @@ class kernelSpec():
                    tuple(d['gridDim']),
                    tuple(d['blockDim']),
                    d['sharedSize'],
+                   literals,
                    inputs,
                    temps,
                    outputs)
 
 
-    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, inputs=[], temps=[], outputs=[]):
+    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, literals=[], inputs=[], temps=[], outputs=[]):
         self.libPath = pathlib.Path(library).resolve()
         self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
@@ -127,6 +131,7 @@ class kernelSpec():
         self.blockDim = blockDim
         self.sharedSize = sharedSize 
 
+        self.literals = literals
         self.inputs = inputs 
         self.temps = temps 
         self.outputs = outputs 
@@ -147,10 +152,12 @@ class kernelSpec():
         d['blockDim'] = self.blockDim
         d['sharedSize'] = self.sharedSize
 
+        d['literals'] = [ l.toDict() for l in self.literals ]
         d['inputs'] = [ b.toDict() for b in self.inputs ]
         d['temps'] = [ b.toDict() for b in self.temps ]
         d['outputs'] = [ b.toDict() for b in self.outputs ]
         return d
+
 
     def __eq__(self, other):
         return self.name == other.name

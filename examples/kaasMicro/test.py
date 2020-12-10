@@ -19,11 +19,11 @@ def test(func):
     grid = (1, 1)
     block = (4, 4, 1)
 
-    func.prepared_call(grid, block, a_gpu)
+    func.prepared_call(grid, block, a_gpu, 5)
 
-    a_doubled = np.empty_like(a)
-    cuda.memcpy_dtoh(a_doubled, a_gpu)
-    print(a_doubled)
+    a_scaled = np.empty_like(a)
+    cuda.memcpy_dtoh(a_scaled, a_gpu)
+    print(a_scaled)
     print(a)
 
 
@@ -53,14 +53,14 @@ def getProdJit():
 def getJitted():
     mod = SourceModule("""
       #include <stdint.h>
-      __global__ void doublify(float *a, float *b)
+      __global__ void multiply(float *a, float v)
       {
 	int idx = threadIdx.x + threadIdx.y*4;
-	a[idx] *= 2;
+	a[idx] *= v;
       }
       """)
-    func = mod.get_function("doublify")
-    func.prepare(["P"])
+    func = mod.get_function("multiply")
+    func.prepare(['P', 'f'])
     return func
 
 def testProd():
@@ -93,9 +93,9 @@ def testProd():
     print(c_prod)
 
 
-testProd()
+# testProd()
 # cuF = getCubin()
-# jitF = getJitted()
+jitF = getJitted()
 
 # test(cuF)
-# test(jitF)
+test(jitF)

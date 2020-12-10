@@ -36,10 +36,10 @@ __global__ void sumKern(uint32_t *input, uint32_t *out)
 }
 
 extern "C"
-__global__ void prodKern(uint32_t *v0, uint32_t *v1, uint64_t *len, uint32_t *vout)
+__global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vout)
 {
     int id = blockIdx.x*blockDim.x+threadIdx.x;
-    if (id < *len) {
+    if (id < len) {
         vout[id] = v0[id] * v1[id];    
     }
 }
@@ -52,9 +52,9 @@ extern "C"
 __global__ void matmulKern(uint64_t *dims, float* array1, float* array2, float* outArr)
 {
     uint64_t rows0 = dims[0];
-    uint64_t cols0 = dims[0];
-    uint64_t rows1 = dims[0];
-    uint64_t cols1 = dims[0];
+    /* uint64_t cols0 = dims[1]; */
+    uint64_t rows1 = dims[2];
+    uint64_t cols1 = dims[3];
 
     //shared memory takes one tile at a time
     __shared__ float S1[TILE_WIDTH][TILE_HEIGHT];

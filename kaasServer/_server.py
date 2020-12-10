@@ -13,7 +13,7 @@ from pprint import pprint
 import libff as ff
 import libff.kv
 
-logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
+logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
 
 class kaasBuf():
     @classmethod
@@ -112,9 +112,9 @@ class kaasBuf():
 
 
 class kaasFunc():
-    def __init__(self, library, fName, nBuf):
+    def __init__(self, library, fName, literalTypes, nBuf):
         self.func = library.get_function(fName)
-        self.func.prepare(["P"]*nBuf)
+        self.func.prepare(literalTypes + ["P"]*nBuf)
 
         self.fName = fName
         self.lib = library 
@@ -124,12 +124,15 @@ class kaasFunc():
         return self.func
 
 
-    def Invoke(self, bufs, gridDim, blockDim, sharedSize):
+    def Invoke(self, literals, bufs, gridDim, blockDim, sharedSize):
         """Invoke the func with the provided diminsions:
             - bufs is a list of kaasBuf objects
             - outs is a list of indexes of bufs to copy back to host memory
               after invocation
         """
+
+        literalVals = [ l.val for l in literals ]
+
         dAddrs = []
         for b in bufs:
             if not b.onDevice:
@@ -137,8 +140,11 @@ class kaasFunc():
 
             dAddrs.append(b.dbuf)
 
-        logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName, [ b.name for b in bufs]))
-        self.func.prepared_call(gridDim, blockDim, *dAddrs, shared_size=sharedSize)
+        args = literalVals + dAddrs
+
+        logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
+            ", ".join([ str(l) for l in literalVals] + [ b.name for b in bufs])))
+        self.func.prepared_call(gridDim, blockDim, *args, shared_size=sharedSize)
 
 
 class kernelCache():
@@ -152,7 +158,8 @@ class kernelCache():
                 self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
 
             nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)
-            self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, nBuf)
+            litTypes = [ l.t for l in spec.literals ]
+            self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, litTypes, nBuf)
 
         return self.kerns[spec.name]
 
@@ -333,7 +340,7 @@ def kaasServeInternal(req, ctx):
         temps = [ bCache.load(b) for b in kSpec.temps ]
         outputs = [ bCache.load(b) for b in kSpec.uniqueOutputs ]
 
-        kern.Invoke(inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+        kern.Invoke(kSpec.literals, inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
 
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.

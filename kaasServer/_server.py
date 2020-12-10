@@ -13,7 +13,8 @@ from pprint import pprint
 import libff as ff
 import libff.kv
 
-logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
+# logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
+logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 
 class kaasBuf():
     @classmethod
@@ -79,6 +80,7 @@ class kaasBuf():
             self.dbuf = cuda.mem_alloc(self.size)
 
             if self.hbuf is None:
+                logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
                 cuda.memset_d8(self.dbuf, 0, self.size)
             else:
                 cuda.memcpy_htod(self.dbuf, self.hbuf)
@@ -109,6 +111,16 @@ class kaasBuf():
             self.dbuf.free()
             self.dbuf = None
             self.onDevice = False
+
+
+    def clear(self):
+        logging.debug("Clearing existing buffer " + self.name)
+        if self.onDevice:
+            cuda.memset_d8(self.dbuf, 0, self.size)
+            self.hbuf = None
+        else:
+            if self.hbuf is not None:
+                ctypes.memset(self.hbuf, 0, self.size)
 
 
 class kaasFunc():
@@ -215,6 +227,8 @@ class bufferCache():
         is exceeded, things will be evicted"""
         # Contains all bufs, on device or not
         self.bufs = {}
+        self.dirtyBufs = {} 
+        self.ephemerals = {}
 
         self.policy = lruPolicy()
 
@@ -245,11 +259,13 @@ class bufferCache():
             self.size -= b.size()
 
 
-    def load(self, bSpec):
+    def load(self, bSpec, overwrite=False):
         """Load a buffer onto the device, fetching from the KV store if
-        necessary. If the buffer is already in the cache and dirty, it will be
-        written back and re-read (you should probably make sure this doesn't
-        happen by flushing when needed)."""
+        necessary. If overwrite=True, a new buffer will be created and any
+        existing value in the KV store will be overwritten. If the buffer is
+        already in the cache and dirty, it will be written back and re-read
+        (you should probably make sure this doesn't happen by flushing when
+        needed)."""
 
         if not bSpec.const and not bSpec.ephemeral:
             logging.debug("Invalidating: " + bSpec.name)
@@ -261,13 +277,19 @@ class bufferCache():
             logging.debug("Loading from Cache: " + bSpec.name)
             buf = self.bufs[bSpec.name]
 
+            if overwrite:
+                buf.clear()
+
             # Reset LRU
             if buf.onDevice:
                 self.policy.remove(buf)
         else:
-            if bSpec.ephemeral:
+            if bSpec.ephemeral or overwrite:
                 logging.debug("Loading (new buffer): " + bSpec.name)
                 buf = kaasBuf.fromSpec(bSpec)
+
+                if buf.ephemeral:
+                    self.ephemerals[bSpec.name] = buf
             else:
                 raw = self.kv.get(bSpec.name)
                 if raw is None:
@@ -287,7 +309,9 @@ class bufferCache():
 
 
     def dirty(self, name):
-        self.bufs[name].dirty = True
+        buf = self.bufs[name]
+        buf.dirty = True
+        self.dirtyBufs[name] = buf
 
 
     def _flushOne(self, buf):
@@ -297,22 +321,36 @@ class bufferCache():
             if not buf.ephemeral:
                 # Data are stored as numpy arrays because memoryviews can't be
                 # pickled. This should still be zero copy.
+                logging.debug("Writing back to kv: " + buf.name)
                 self.kv.put(buf.name, np.asarray(buf.hbuf))
             buf.dirty = False
 
 
     def flush(self):
-        for b in self.bufs.values():
+        for b in self.dirtyBufs.values():
             self._flushOne(b)
+        self.dirtyBufs = {}
 
+
+    def clearEphemerals(self):
+        for b in list(self.ephemerals.values()):
+            self.drop(b.name)
+
+        self.ephemerals = {}
 
     def drop(self, name):
-        """Remove a buffer from the cache. This frees any device memory and
-        drops references to the host buffer (Python's GC will pick it up
-        eventually)."""
+        """Remove a buffer from the cache (writing back if dirty). This frees
+        any device memory and drops references to the host buffer (Python's GC
+        will pick it up eventually)."""
+        logging.debug("Dropping " + name)
         buf = self.bufs[name]
         self._flushOne(buf)
         buf.freeDevice()
+
+        if buf.dirty:
+            self.dirtyBufs.pop(name, None)
+        if buf.ephemeral:
+            self.ephemerals.pop(name, None)
 
         self.policy.remove(buf)
 
@@ -338,7 +376,7 @@ def kaasServeInternal(req, ctx):
         # XXX Too lazy to check this for now, we assume all the buffers will fit.
         inputs = [ bCache.load(b) for b in kSpec.inputs ]
         temps = [ bCache.load(b) for b in kSpec.temps ]
-        outputs = [ bCache.load(b) for b in kSpec.uniqueOutputs ]
+        outputs = [ bCache.load(b, overwrite=True) for b in kSpec.uniqueOutputs ]
 
         kern.Invoke(kSpec.literals, inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
 
@@ -357,5 +395,6 @@ def kaasServeInternal(req, ctx):
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.
     bCache.flush()
+    bCache.clearEphemerals()
 
     return {}

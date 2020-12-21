@@ -118,22 +118,16 @@ def testDotProd(mode='direct'):
         print("PASS")
 
 
-def getArr(path):
-    aDim = np.fromfile(path, dtype=np.uint32, count=2)
-    aDat = np.fromfile(path, dtype=np.float32, offset=8, count=(aDim[0]*aDim[1]))
-    # the .mtx files from this example are column major for some reason
-    aDat = aDat.reshape(aDim[0], aDim[1], order="F")
-    return aDat
-
+rng = np.random.default_rng()
+def generateArr(shape):
+    return rng.random(shape, dtype=np.float32)
 
 def testMatMul(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
 
-    # arrA = getArr('data/a_3_3.mtx')
-    # arrB = getArr('data/b_3_2.mtx')
-    arrA = getArr('data/a_32_32.mtx')
-    arrB = getArr('data/b_32_32.mtx')
+    arrA = generateArr((32,32))
+    arrB = generateArr((32,32))
     dims = np.asarray(list(arrA.shape) + list(arrB.shape), dtype=np.uint64)
 
     libffCtx.kv.put('dims', dims)
@@ -163,8 +157,9 @@ def testMatMul(mode='direct'):
 
     kaasHandle.Invoke(req.toDict())
 
-    cArr = np.frombuffer(libffCtx.kv.get('C'), dtype=np.float32)
-    cArr = cArr.reshape(arrA.shape[0], arrB.shape[1], order='F')
+    cRaw = libffCtx.kv.get('C')
+    cArr = np.frombuffer(cRaw, dtype=np.float32)
+    cArr = cArr.reshape(arrA.shape[0], arrB.shape[1])
 
     libffCtx.kv.delete("dims")
     libffCtx.kv.delete("A")
@@ -193,9 +188,9 @@ if __name__ == "__main__":
     # print("Double Test:")
     # testDoublify('process')
 
-    print("Dot Product Test:") 
-    testDotProd('process')
+    # print("Dot Product Test:") 
+    # testDotProd('direct')
 
-    # print("MatMul Test")
-    # testMatMul('direct')
+    print("MatMul Test")
+    testMatMul('direct')
     # testMatMul('process')

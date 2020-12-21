@@ -44,15 +44,18 @@ __global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vou
     }
 }
 
+// Row Major
+#define flatIdx(R,C,NROW,NCOL) ((R*NCOL)+C)
+
 // Generic matrix multiply.
 // Original implementation by Aditi Singh (https://github.com/aditisingh/GPU-Gemm)
 #define TILE_WIDTH 32
 #define TILE_HEIGHT 32
 extern "C"
-__global__ void matmulKern(uint64_t *dims, float* array1, float* array2, float* outArr)
+__global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* outArr)
 {
     uint64_t rows0 = dims[0];
-    /* uint64_t cols0 = dims[1]; */
+    uint64_t cols0 = dims[1];
     uint64_t rows1 = dims[2];
     uint64_t cols1 = dims[3];
 
@@ -68,9 +71,6 @@ __global__ void matmulKern(uint64_t *dims, float* array1, float* array2, float* 
     unsigned int c=blockIdx.x*blockDim.x + threadIdx.x;	
     unsigned int r=blockIdx.y*blockDim.y + threadIdx.y;
 
-    //column major index, using row and column value
-    unsigned int idx=c*rows0+r;
-
     //register to store multiplication result initialized to zero
     float val=0;
 
@@ -81,23 +81,23 @@ __global__ void matmulKern(uint64_t *dims, float* array1, float* array2, float* 
         int var1=m*TILE_WIDTH+tx;
         int var2=m*TILE_WIDTH+ty;
 
-        //copying a tile from array1
-        //if the value is associated to a valid matrix coordinate in array1
+        //copying a tile from array0
+        //if the value is associated to a valid matrix coordinate in array0
         //then store it to shared memory S1
         if (r < rows0 && var1 < rows1) {
             //storing a "valid" value from array to shared memory
-            S1[ty][tx]=array1[r + var1*rows0];
+            S1[ty][tx] = array0[flatIdx(r, var1, rows0, cols0)];
         } else {
             //storing zero, since there is no valid value
             S1[ty][tx]=0;					
         }
         __syncthreads();
 
-        //copying a tile from array2
-        //if value is associates to a valid matrix coordinate in array2 then
+        //copying a tile from array1
+        //if value is associates to a valid matrix coordinate in array1 then
         //store it to shared memory S2
         if(c < cols1 && var2 < rows1) {
-            S2[ty][tx]=array2[var2+rows1*c];
+            S2[ty][tx] = array1[flatIdx(var2, c, rows1, cols1)];
         } else { 
             //storing zero, since no valid value
             S2[ty][tx]=0;
@@ -114,6 +114,6 @@ __global__ void matmulKern(uint64_t *dims, float* array1, float* array2, float* 
     //removing degenerate cases
     if(r < rows0 && c< cols1) {
         //saving multiplication result to global memory
-        outArr[idx]=val;	
+        outArr[flatIdx(r, c, rows0, cols1)] = val;
     }
 }

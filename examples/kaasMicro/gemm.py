@@ -31,7 +31,8 @@ def generateArr(shape):
 
     return arr
 
-
+mmKern = "sgemm"
+# mmKern = "matmul"
 class mmFunc():
     def __init__(self, shape, libffCtx, kaasHandle, mode='direct'):
         """Create a matmul function invoker. Shape should be the two matrix
@@ -52,23 +53,24 @@ class mmFunc():
         # 4 uint64s
         self.dimBuf = kaas.bufferSpec("dims", 4*8)
 
-        tileN = 16
-        tile_tb_height = 8
-        tileM = (tileN * tile_tb_height)
-        if self.aShape[0] % tileM != 0 or self.bShape[1] % tileN != 0:
-            raise RuntimeError("Arrays must be a multiple of tile size")
+        if mmKern == 'sgemm':
+            tileN = 32
+            tile_tb_height = 16 
+            tileM = (tileN * tile_tb_height)
+            if self.aShape[0] % tileM != 0 or self.bShape[1] % tileN != 0:
+                raise RuntimeError("Arrays must be a multiple of tile size")
 
-        gridDim = (self.aShape[0] // tileM, self.bShape[1] // tileN, 1)
-        blockDim = (tileN, tile_tb_height, 1)
-        sharedSize = tile_tb_height * tileN * 4
-
-        # threadBlock = 32
-        # gridDim = (math.ceil(self.bShape[0] / threadBlock), math.ceil(self.aShape[0] / threadBlock), 1)
-        # blockDim = (threadBlock, threadBlock, 1)
-        # sharedSize = (2 * blockDim[0] * blockDim[1])*4
+            gridDim = (self.aShape[0] // tileM, self.bShape[1] // tileN, 1)
+            blockDim = (tileN, tile_tb_height, 1)
+            sharedSize = tile_tb_height * tileN * 4
+        else:
+            threadBlock = 32
+            gridDim = (math.ceil(self.bShape[0] / threadBlock), math.ceil(self.aShape[0] / threadBlock), 1)
+            blockDim = (threadBlock, threadBlock, 1)
+            sharedSize = (2 * blockDim[0] * blockDim[1])*4
 
         self.kern = kaas.kernelSpec(testPath / 'kerns' / 'gemm.cubin',
-            'sgemm',
+            mmKern,
             gridDim, blockDim, sharedSize=sharedSize,
             inputs = [self.dimBuf, self.aBuf, self.bBuf],
             outputs = [self.cBuf])
@@ -85,8 +87,10 @@ class mmFunc():
         self.dimBuf.name = name+"_dims"
 
         req = kaas.kaasReq([ self.kern ])
-        self.kHandle.Invoke(req.toDict())
-
+        times = {}
+        with libff.timer("invoke", times):
+            self.kHandle.Invoke(req.toDict())
+        print(libff.reportTimers(times))
         return name+"_c"
 
 
@@ -133,8 +137,8 @@ def testMM(mode='direct'):
 
     # arrA = generateArr((32,32))
     # arrB = generateArr((32,32))
-    arrA = generateArr((128,128))
-    arrB = generateArr((128,128))
+    arrA = generateArr((512,256))
+    arrB = generateArr((256,512))
 
     shape = [arrA.shape, arrB.shape]
 

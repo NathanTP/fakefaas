@@ -46,11 +46,14 @@ __global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vou
 #endif
 
 // Generic matrix multiply.
+// This one in row major is roughly as fast as sgemm in col major (sgemm is slightly faster, but only in colmajor) 
+//      perf differences depend on shape, some shapes show no difference
+// This one is only correct for some shapes (square works, some other combos as well, but e.g. 512x256, 256x512 fails)
 // Original implementation by Aditi Singh (https://github.com/aditisingh/GPU-Gemm)
 #define TILE_WIDTH 32
 #define TILE_HEIGHT 32
 extern "C"
-__global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* outArr)
+__global__ void matmul(uint64_t *dims, float* array0, float* array1, float* outArr)
 {
     uint64_t nrow0 = dims[0];
     uint64_t ncol0 = dims[1];
@@ -117,10 +120,12 @@ __global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* 
 }
 
 // Number of columns in tile (length of a tile row)
-#define TILE_N 16 
+/* #define TILE_N 16  */
+#define TILE_N 32
 
 // Number of rows in tile (length of a tile column)???
-#define TILE_TB_HEIGHT 8
+/* #define TILE_TB_HEIGHT 8 */
+#define TILE_TB_HEIGHT 16
 
 // Total number of elements in a tile (why is this called M?, it's used to calculate a rowID in A...)
 #define TILE_M (TILE_N*TILE_TB_HEIGHT)
@@ -147,6 +152,11 @@ __global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* 
 */
 
 /* Based on https://github.com/abduld/Parboil/blob/master/benchmarks/sgemm/src/cuda/sgemm_kernel.cu */
+// This implementation is a bit faster than matmul above, but only in col-major mode
+// While this works correctly in row-major, it's about 20% slower than
+// col-major. I think I'd need to transpose the iteration/tiling order to be
+// row-optimized. Probably not worth the effort for the slight performance
+// boost over the other implementation above.
 extern "C"
 __global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
 {
@@ -199,56 +209,16 @@ __global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
         __syncthreads();
     }
 
+    // t is the starting point in tile in C (tile is 1xTILE_N) 
+    // i is the columnID within this tile
     int t = flatIdx(m, blockIdx.y*TILE_N, nrowC, ncolC);
     for (int i = 0; i < TILE_N; i++) {
-#ifdef CMAJ
-        int cIdx = t+i*nrowC;
-#else
-        int cIdx = t + i;
-#endif
+        //cIdx is the global address of the tile element in C
+        #ifdef CMAJ
+            int cIdx = t+i*nrowC;
+        #else
+            int cIdx = t + i;
+        #endif
         C[cIdx] = C[cIdx] + cTile[i];
     }
 }
-
-#if 0
-extern "C"
-__global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
-{
-    uint64_t nrowA = dims[0];
-    uint64_t ncolA = dims[1];
-    uint64_t nrowB = dims[2];
-    uint64_t ncolB = dims[3];
-    uint64_t nrowC = nrowA;
-    uint64_t ncolC = ncolB;
-
-    uint64_t lda = nrowA;
-    uint64_t ldb = nrowB;
-    uint64_t ldc = nrowC;
-    uint64_t k = ncolA;
-
-    // Partial results 
-    float c[TILE_N];
-    for (int i=0; i < TILE_N; i++)
-    c[i] = 0.0f;
-    int mid = threadIdx.y * blockDim.x + threadIdx.x; //flattened id
-    int m = blockIdx.x * TILE_M + mid;
-    int n = blockIdx.y * TILE_N + threadIdx.x;
-    __shared__ float b_s[TILE_TB_HEIGHT][TILE_N];
-    for (int i = 0; i < k; i+=TILE_TB_HEIGHT) {
-    float a; 
-    b_s[threadIdx.y][threadIdx.x]=B[n + (i+threadIdx.y)*ldb];
-    __syncthreads();
-    for (int j = 0; j < TILE_TB_HEIGHT; j++) {
-        a = A[m + (i+j)*lda];
-        for (int kk = 0; kk < TILE_N; kk++)
-        c[kk] += a * b_s[j][kk];
-
-    }
-    __syncthreads();
-    }
-    int t = ldc*blockIdx.y * TILE_N + m;
-    for (int i = 0; i < TILE_N; i++) {
-    C[t+i*ldc] = C[t+i*ldc] + c[i];
-    }
-}
-#endif

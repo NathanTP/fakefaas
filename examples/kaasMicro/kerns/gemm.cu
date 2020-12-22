@@ -37,7 +37,7 @@ __global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vou
     }
 }
 
-#define CMAJ
+/* #define CMAJ */
 
 #ifdef CMAJ
     #define flatIdx(R,C,NROW,NCOL) ((C*NROW)+R)
@@ -116,8 +116,13 @@ __global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* 
     }
 }
 
+// Number of columns in tile (length of a tile row)
 #define TILE_N 16 
+
+// Number of rows in tile (length of a tile column)???
 #define TILE_TB_HEIGHT 8
+
+// Total number of elements in a tile (why is this called M?, it's used to calculate a rowID in A...)
 #define TILE_M (TILE_N*TILE_TB_HEIGHT)
 
 /*
@@ -127,6 +132,18 @@ __global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* 
 
     y - rowID
     x - colID
+
+    ncol - number of elements in row (len(row))
+    nrow - number of elements in col (len(col))
+
+    rowMjr - row * ncol + col
+    colMjr - col * nrow + row
+
+    ncolBlock - tileN
+    nrowBlock - tile_tb_height
+
+    ngridCol - nrowA / ???? (it's ncolBlock*nrowBlock, i.e. nelemBlock which they call TILE_M but that doesn't make sense)
+    ngridRow - ncolB / ncolBlock (blocks tile across columns
 */
 
 /* Based on https://github.com/abduld/Parboil/blob/master/benchmarks/sgemm/src/cuda/sgemm_kernel.cu */
@@ -147,23 +164,36 @@ __global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
     }
 
     int mid = threadIdx.y * blockDim.x + threadIdx.x; //flattened id
+
+    // global rowID for this thread (in A and C)
     int m = blockIdx.x * TILE_M + mid;
+
+    // global column ID for this thread (in B and C)
     int n = blockIdx.y * TILE_N + threadIdx.x;
 
+    // Tiles cover C
     __shared__ float bTile[TILE_TB_HEIGHT][TILE_N];
-    for (int i = 0; i < ncolA; i += TILE_TB_HEIGHT) {
+
+    // Iterate tiles down in row dimension, i is the global start row for the current tile (of B)
+    // The global start row for this thread in the current tile is calculated in the loop
+    for (int i = 0; i < nrowB; i += TILE_TB_HEIGHT) {
         float a; 
 
         // fill in the shared bTile for this thread block (each thread does one elem)
+        // i+threadIdx.y is the global rowID in B for this thread's portion of the tile
         bTile[threadIdx.y][threadIdx.x] = B[flatIdx((i+threadIdx.y), n, nrowB, ncolB)];
-
         __syncthreads();
+        // bTile now covers the tile of C starting at (blockIdx.y*TILE_N,i)
 
-        for (int j = 0; j < TILE_TB_HEIGHT; j++) {
-            a = A[flatIdx(m, (i+j), nrowA, ncolA)];
+        // For each row of the tile (tileRow is the row index into the B tile)
+        for (int tileRow = 0; tileRow < TILE_TB_HEIGHT; tileRow++) {
+            // i+tileRow is the global k index (global colID of A, rowID of B)
+            // m is the global rowID in A
+            a = A[flatIdx(m, (i + tileRow), nrowA, ncolA)];
 
-            for (int kk = 0; kk < TILE_N; kk++) {
-                cTile[kk] += a * bTile[j][kk];
+            // iterate each column of the bTile
+            for (int tileCol = 0; tileCol < TILE_N; tileCol++) {
+                cTile[tileCol] += a * bTile[tileRow][tileCol];
             }
         }
         __syncthreads();
@@ -171,7 +201,12 @@ __global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
 
     int t = flatIdx(m, blockIdx.y*TILE_N, nrowC, ncolC);
     for (int i = 0; i < TILE_N; i++) {
-        C[flatIdx(t, i, nrowA, ncolB)] = C[flatIdx(t, i, nrowA, ncolB)] + cTile[i];
+#ifdef CMAJ
+        int cIdx = t+i*nrowC;
+#else
+        int cIdx = t + i;
+#endif
+        C[cIdx] = C[cIdx] + cTile[i];
     }
 }
 

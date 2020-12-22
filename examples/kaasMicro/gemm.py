@@ -11,7 +11,8 @@ import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 testPath = pathlib.Path(__file__).resolve().parent
-colMajor = True 
+# colMajor = True
+colMajor = False
 
 def getCtx(remote=False):
     if remote:

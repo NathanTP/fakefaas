@@ -1,0 +1,219 @@
+#include <stdint.h>
+#include <stdio.h>
+
+extern "C"
+__global__ void sumKern(uint32_t *input, uint32_t *out)
+{
+    const int tid = threadIdx.x;
+
+    auto step_size = 1;
+    int number_of_threads = blockDim.x;
+
+    while (number_of_threads > 0)
+    {
+        if (tid < number_of_threads)
+        {
+            const auto fst = tid * step_size * 2;
+            const auto snd = fst + step_size;
+            input[fst] += input[snd];
+        }
+
+        step_size <<= 1; 
+        number_of_threads >>= 1;
+        __syncthreads();
+    }
+
+    if(tid == 0) {
+        *out = input[0];
+    }
+}
+
+extern "C"
+__global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vout)
+{
+    int id = blockIdx.x*blockDim.x+threadIdx.x;
+    if (id < len) {
+        vout[id] = v0[id] * v1[id];    
+    }
+}
+
+#define CMAJ
+
+#ifdef CMAJ
+    #define flatIdx(R,C,NROW,NCOL) ((C*NROW)+R)
+#else
+    #define flatIdx(R,C,NROW,NCOL) ((R*NCOL)+C)
+#endif
+
+// Generic matrix multiply.
+// Original implementation by Aditi Singh (https://github.com/aditisingh/GPU-Gemm)
+#define TILE_WIDTH 32
+#define TILE_HEIGHT 32
+extern "C"
+__global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* outArr)
+{
+    uint64_t nrow0 = dims[0];
+    uint64_t ncol0 = dims[1];
+    uint64_t nrow1 = dims[2];
+    uint64_t ncol1 = dims[3];
+
+    //shared memory takes one tile at a time
+    __shared__ float S1[TILE_WIDTH][TILE_HEIGHT];
+    __shared__ float S2[TILE_HEIGHT][TILE_WIDTH];
+
+    //threads x and y index for the current block
+    unsigned int tx=threadIdx.x;	
+    unsigned int ty=threadIdx.y;
+
+    //row value using x and y index of current thread (respectively)
+    unsigned int c=blockIdx.x*blockDim.x + threadIdx.x;	
+    unsigned int r=blockIdx.y*blockDim.y + threadIdx.y;
+
+    //register to store multiplication result initialized to zero
+    float val=0;
+
+    //going over all tiles one by one, with each m
+    for(int m=0; m<1+((nrow1-1)/TILE_WIDTH); m++)
+    {
+        //x and y thread value for current tile
+        int var1=m*TILE_WIDTH+tx;
+        int var2=m*TILE_WIDTH+ty;
+
+        //copying a tile from array0
+        //if the value is associated to a valid matrix coordinate in array0
+        //then store it to shared memory S1
+        if (r < nrow0 && var1 < nrow1) {
+            //storing a "valid" value from array to shared memory
+            S1[ty][tx] = array0[flatIdx(r, var1, nrow0, ncol0)];
+        } else {
+            //storing zero, since there is no valid value
+            S1[ty][tx]=0;					
+        }
+        __syncthreads();
+
+        //copying a tile from array1
+        //if value is associates to a valid matrix coordinate in array1 then
+        //store it to shared memory S2
+        if(c < ncol1 && var2 < nrow1) {
+            S2[ty][tx] = array1[flatIdx(var2, c, nrow1, ncol1)];
+        } else { 
+            //storing zero, since no valid value
+            S2[ty][tx]=0;
+        }
+        __syncthreads();
+
+        //going over entire tile, ty row in S1 and tx column in S2
+        for(int i=0; i<TILE_WIDTH;i++) {
+            val+=S1[ty][i]*S2[i][tx];
+        }
+        __syncthreads();
+    }
+
+    //removing degenerate cases
+    if(r < nrow0 && c< ncol1) {
+        //saving multiplication result to global memory
+        outArr[flatIdx(r, c, nrow0, ncol1)] = val;
+    }
+}
+
+#define TILE_N 16 
+#define TILE_TB_HEIGHT 8
+#define TILE_M (TILE_N*TILE_TB_HEIGHT)
+
+/*
+    N - ncolB, ncolC
+    M - nrowA, nrowC
+    K - ncolA, nrowB
+
+    y - rowID
+    x - colID
+*/
+
+/* Based on https://github.com/abduld/Parboil/blob/master/benchmarks/sgemm/src/cuda/sgemm_kernel.cu */
+extern "C"
+__global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
+{
+    uint64_t nrowA = dims[0];
+    uint64_t ncolA = dims[1];
+    uint64_t nrowB = dims[2];
+    uint64_t ncolB = dims[3];
+    uint64_t nrowC = nrowA;
+    uint64_t ncolC = ncolB;
+
+    // Partial results 
+    float cTile[TILE_N];
+    for (int i=0; i < TILE_N; i++) {
+        cTile[i] = 0.0f;
+    }
+
+    int mid = threadIdx.y * blockDim.x + threadIdx.x; //flattened id
+    int m = blockIdx.x * TILE_M + mid;
+    int n = blockIdx.y * TILE_N + threadIdx.x;
+
+    __shared__ float bTile[TILE_TB_HEIGHT][TILE_N];
+    for (int i = 0; i < ncolA; i += TILE_TB_HEIGHT) {
+        float a; 
+
+        // fill in the shared bTile for this thread block (each thread does one elem)
+        bTile[threadIdx.y][threadIdx.x] = B[flatIdx((i+threadIdx.y), n, nrowB, ncolB)];
+
+        __syncthreads();
+
+        for (int j = 0; j < TILE_TB_HEIGHT; j++) {
+            a = A[flatIdx(m, (i+j), nrowA, ncolA)];
+
+            for (int kk = 0; kk < TILE_N; kk++) {
+                cTile[kk] += a * bTile[j][kk];
+            }
+        }
+        __syncthreads();
+    }
+
+    int t = flatIdx(m, blockIdx.y*TILE_N, nrowC, ncolC);
+    for (int i = 0; i < TILE_N; i++) {
+        C[flatIdx(t, i, nrowA, ncolB)] = C[flatIdx(t, i, nrowA, ncolB)] + cTile[i];
+    }
+}
+
+#if 0
+extern "C"
+__global__ void sgemm( uint64_t *dims, const float *A, const float *B, float *C)
+{
+    uint64_t nrowA = dims[0];
+    uint64_t ncolA = dims[1];
+    uint64_t nrowB = dims[2];
+    uint64_t ncolB = dims[3];
+    uint64_t nrowC = nrowA;
+    uint64_t ncolC = ncolB;
+
+    uint64_t lda = nrowA;
+    uint64_t ldb = nrowB;
+    uint64_t ldc = nrowC;
+    uint64_t k = ncolA;
+
+    // Partial results 
+    float c[TILE_N];
+    for (int i=0; i < TILE_N; i++)
+    c[i] = 0.0f;
+    int mid = threadIdx.y * blockDim.x + threadIdx.x; //flattened id
+    int m = blockIdx.x * TILE_M + mid;
+    int n = blockIdx.y * TILE_N + threadIdx.x;
+    __shared__ float b_s[TILE_TB_HEIGHT][TILE_N];
+    for (int i = 0; i < k; i+=TILE_TB_HEIGHT) {
+    float a; 
+    b_s[threadIdx.y][threadIdx.x]=B[n + (i+threadIdx.y)*ldb];
+    __syncthreads();
+    for (int j = 0; j < TILE_TB_HEIGHT; j++) {
+        a = A[m + (i+j)*lda];
+        for (int kk = 0; kk < TILE_N; kk++)
+        c[kk] += a * b_s[j][kk];
+
+    }
+    __syncthreads();
+    }
+    int t = ldc*blockIdx.y * TILE_N + m;
+    for (int i = 0; i < TILE_N; i++) {
+    C[t+i*ldc] = C[t+i*ldc] + c[i];
+    }
+}
+#endif

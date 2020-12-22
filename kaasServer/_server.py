@@ -148,7 +148,7 @@ class kaasFunc():
         dAddrs = []
         for b in bufs:
             if not b.onDevice:
-                raise RuntimeError("Provided buffer was not resident on the device")
+                raise RuntimeError("Provided buffer was not resident on the device: " + b.name)
 
             dAddrs.append(b.dbuf)
 

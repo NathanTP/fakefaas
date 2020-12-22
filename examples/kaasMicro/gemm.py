@@ -34,24 +34,45 @@ def generateArr(shape):
 mmKern = "sgemm"
 # mmKern = "matmul"
 class mmFunc():
-    def __init__(self, shape, libffCtx, kaasHandle, mode='direct'):
+    def _bufArgToBuf(self, arg, bname, shape):
+        """Buffer args to various mmFunc methods can be ndarray, or kaasBuf,
+        this converts them all to a kaasBuf as appropriate"""
+        if isinstance(arg, kaas.bufferSpec):
+            return arg
+        elif isinstance(arg, np.ndarray):
+            self.ffCtx.kv.put(self.name + "_" + bname, arg)
+        elif arg is not None:
+            raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
+
+        # None and ndarray need to generate a bufferSpec
+        return kaas.bufferSpec(self.name + "_" + bname, shape[0]*shape[1] * 4)
+
+
+    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None, mode='direct'):
         """Create a matmul function invoker. Shape should be the two matrix
         dimensions [(arows, acols), (brows, bcols)]. mode can be either
-        'direct' or 'process' depending on how you'd like kaas to run."""
+        'direct' or 'process' depending on how you'd like kaas to run.
+        
+        constB (a numpy array or kaas.bufferSpec) may be provided to associate
+        a permanent B associated with this multiplier rather than a dynamic
+        one."""
+        self.name = name
         self.ffCtx = libffCtx
         self.kHandle = kaasHandle
 
         self.aShape = shape[0]
         self.bShape = shape[1]
+        self.cShape = (shape[0][0], shape[1][1])
 
+        if constB is not None:
+            self.constB = self._bufArgToBuf(constB, 'b', self.bShape)
+        else:
+            self.constB = None
 
-        # These are just templates, the names will be overwritten when invoked
-        self.aBuf = kaas.bufferSpec('A', self.aShape[0] * self.aShape[1] * 4)
-        self.bBuf = kaas.bufferSpec('B', self.bShape[0] * self.bShape[1] * 4)
-        self.cBuf = kaas.bufferSpec('C', self.aShape[0] * self.bShape[1] * 4)
-
-        # 4 uint64s
-        self.dimBuf = kaas.bufferSpec("dims", 4*8)
+        # dims is a property of a multiplier function, not any particular
+        # invocation. We upload it at registration time.
+        self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64))
+        self.dimBuf = kaas.bufferSpec(self.name + "_dims", 4*8)
 
         if mmKern == 'sgemm':
             tileN = 32
@@ -60,76 +81,76 @@ class mmFunc():
             if self.aShape[0] % tileM != 0 or self.bShape[1] % tileN != 0:
                 raise RuntimeError("Arrays must be a multiple of tile size")
 
-            gridDim = (self.aShape[0] // tileM, self.bShape[1] // tileN, 1)
-            blockDim = (tileN, tile_tb_height, 1)
-            sharedSize = tile_tb_height * tileN * 4
+            self.gridDim = (self.aShape[0] // tileM, self.bShape[1] // tileN, 1)
+            self.blockDim = (tileN, tile_tb_height, 1)
+            self.sharedSize = tile_tb_height * tileN * 4
         else:
             threadBlock = 32
-            gridDim = (math.ceil(self.bShape[0] / threadBlock), math.ceil(self.aShape[0] / threadBlock), 1)
-            blockDim = (threadBlock, threadBlock, 1)
-            sharedSize = (2 * blockDim[0] * blockDim[1])*4
+            self.gridDim = (math.ceil(self.bShape[0] / threadBlock), math.ceil(self.aShape[0] / threadBlock), 1)
+            self.blockDim = (threadBlock, threadBlock, 1)
+            self.sharedSize = (2 * blockDim[0] * blockDim[1])*4
 
-        self.kern = kaas.kernelSpec(testPath / 'kerns' / 'gemm.cubin',
-            mmKern,
-            gridDim, blockDim, sharedSize=sharedSize,
-            inputs = [self.dimBuf, self.aBuf, self.bBuf],
-            outputs = [self.cBuf])
        
+    def getKernFunc(self, aData=None, bData=None, cData=None):
+        """Returns the kernel function object for this multiplier. You can use
+        this to compose larger operations. aData, bData, and cData may be:
+            None: the buffer will be assumed to exist in the kv store with name 'NAME_BUFNAME' (e.g. 'foo_a')
+            np.ndarray: The contents of the array will be uploaded to the kv as 'NAME_BUFNAME'
+            kaas.bufferSpec: the buffer spec will be used directly
 
-    def invoke(self, name):
+        Using np.ndarray for cData does nothing as the array will be
+        overwritten anyway. If bData is None and the function was created with
+        constB, constB will be used.
+        """
+        aBuf = self._bufArgToBuf(aData, 'a', self.aShape)
+
+        if bData is None and self.constB is not None:
+            bBuf = self.constB
+        else:
+            bBuf = self._bufArgToBuf(aData, 'b', self.aShape)
+
+        cBuf = self._bufArgToBuf(cData, 'c', self.cShape)
+
+        return kaas.kernelSpec(testPath / 'kerns' / 'gemm.cubin',
+            mmKern,
+            self.gridDim, self.blockDim, sharedSize=self.sharedSize,
+            inputs = [self.dimBuf, aBuf, bBuf],
+            outputs = [cBuf])
+
+
+    def invoke(self, aData=None, bData=None, cData=None, times=None):
         """Invoke this multiplier with inputs uploaded with 'name' (using
-        uploadArrays()). Invoke returns the name of the result in libff.kv."""
+        uploadArrays()). Invoke returns the name of the result in libff.kv.
+        Times may be provided to record invocation statistics. See
+        getKernFunc() for details of the data arguments."""
+        kern = self.getKernFunc(aData, bData, cData)
 
-        # References to these are stored in self.kern
-        self.aBuf.name = name+"_a" 
-        self.bBuf.name = name+"_b" 
-        self.cBuf.name = name+"_c"
-        self.dimBuf.name = name+"_dims"
-
-        req = kaas.kaasReq([ self.kern ])
-        times = {}
+        req = kaas.kaasReq([ kern ])
         with libff.timer("invoke", times):
             self.kHandle.Invoke(req.toDict())
-        print(libff.reportTimers(times))
-        return name+"_c"
+
+        return kern.outputs[0].name 
 
 
-class mmData():
-    def __init__(self, name, shape, ctx: libff.invoke.RemoteCtx):
-        """Represents a set of matrices will be used for the kaas matmul
-        routine.  Name will be used to prefix all elements in the kv store.
-        Shape represents both A and B arrays: ((a_nrow, a_ncol), (b_nrow,
-        b_ncol))."""
-        self.name = name
-        self.shape = shape
-        self.ctx = ctx
+    def destroy(self):
+        """Free any remote resources associated with this function. Any A, B,
+        or C buffers (even bConst) are the responsibility of the caller to
+        free."""
+        # Right now there is nothing else to do as the system doesn't support
+        # de-registration of functions. Everything related to this function
+        # will eventually get flushed out of the caches anyway.
+        self.ffCtx.kv.delete(self.name+"_dims")
 
 
-    def upload(self, a, b):
-        """Upload a and b matrices. No local reference will be maintained to a
-        or b. They should be numpy 2d arrays of float32.""" 
-        self.ctx.kv.put(self.name+"_dims", np.asarray(list(self.shape[0]) + list(self.shape[1]), dtype=np.uint64))
-        self.ctx.kv.put(self.name+"_a", a)
-        self.ctx.kv.put(self.name+"_b", b)
-
-
-    def getResult(self):
-        cRaw = self.ctx.kv.get(self.name+"_c")
-        cArr = np.frombuffer(cRaw, dtype=np.float32)
-        if colMajor:
-            cArr = cArr.reshape(self.shape[0][0], self.shape[1][1], order="F")
-        else:
-            cArr = cArr.reshape(self.shape[0][0], self.shape[1][1])
-        
-        return cArr
-
+def getData(ffCtx, name, shape):
+    raw = ffCtx.kv.get(name)
+    arr = np.frombuffer(raw, dtype=np.float32)
+    if colMajor:
+        arr = arr.reshape(shape[0], shape[1], order="F")
+    else:
+        arr = arr.reshape(shape[0], shape[1])
     
-    def clean(self):
-        self.ctx.kv.delete(self.name+"_a")
-        self.ctx.kv.delete(self.name+"_b")
-        self.ctx.kv.delete(self.name+"_c")
-        self.ctx.kv.delete(self.name+"_dims")
-
+    return arr
 
 def testMM(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
@@ -137,27 +158,29 @@ def testMM(mode='direct'):
 
     # arrA = generateArr((32,32))
     # arrB = generateArr((32,32))
-    arrA = generateArr((512,256))
+    arrA = generateArr((1024,256))
     arrB = generateArr((256,512))
+    libffCtx.kv.put("test_a", arrA)
+    libffCtx.kv.put("test_b", arrB)
 
     shape = [arrA.shape, arrB.shape]
+    func = mmFunc('test', shape, libffCtx, kaasHandle, mode=mode)
 
-    data = mmData("test", shape, libffCtx)
-    data.upload(arrA, arrB)
+    rKey = func.invoke()
+    
+    arrC = getData(libffCtx, rKey, func.cShape)
 
-    func = mmFunc(shape, libffCtx, kaasHandle, mode)
-
-    func.invoke("test")
-
-    arrC = data.getResult()
-    data.clean()
+    libffCtx.kv.delete('test_a')
+    libffCtx.kv.delete('test_b')
+    libffCtx.kv.delete('test_c')
+    func.destroy()
 
     arrC = arrC.round(4)
     npC = np.matmul(arrA, arrB).round(4)
-    # if(not np.array_equal(arrC, npC)):
 
-    # Not really sure the best way to measure similarity. Single precision
-    # accumulates errors really fast so the differences can be big.
+    # Single precision accumulates errors really fast so the differences can be
+    # big. The euclidean distance seems to get us close enough for a pretty
+    # good guess at correctness
     diff = arrC - npC
     dist = np.linalg.norm(diff)
     if dist > 1:

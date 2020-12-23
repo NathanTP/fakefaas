@@ -120,12 +120,12 @@ __global__ void matmul(uint64_t *dims, float* array0, float* array1, float* outA
 }
 
 // Number of columns in tile (length of a tile row)
-/* #define TILE_N 16  */
-#define TILE_N 32
+#define TILE_N 16
+//#define TILE_N 32
 
 // Number of rows in tile (length of a tile column)???
-/* #define TILE_TB_HEIGHT 8 */
-#define TILE_TB_HEIGHT 16
+#define TILE_TB_HEIGHT 8
+//#define TILE_TB_HEIGHT 16
 
 // Total number of elements in a tile (why is this called M?, it's used to calculate a rowID in A...)
 #define TILE_M (TILE_N*TILE_TB_HEIGHT)

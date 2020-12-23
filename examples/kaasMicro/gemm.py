@@ -23,6 +23,27 @@ def getCtx(remote=False):
     return libff.invoke.RemoteCtx(None, objStore)
 
 
+class mmShape():
+    def __init__(self, M, N, K):
+        """Represents the shape of a single matmul operation:
+                M: nrowsA and nrowsC
+                N: ncolB and ncolC
+                K: inner dimension (ncolA and nrowB)
+        """
+        self.M = M
+        self.N = N
+        self.K = K
+
+        self.a = (self.M, self.K)
+        self.b = (self.K, self.N)
+        self.c = (self.M, self.N)
+
+
+    @staticmethod
+    def nbytes(matShape):
+        return matShape[0]*matShape[1]*4
+
+
 rng = np.random.default_rng(0)
 def generateArr(shape):
     arr = rng.random(shape, dtype=np.float32)
@@ -34,9 +55,10 @@ def generateArr(shape):
 mmKern = "sgemm"
 # mmKern = "matmul"
 class mmFunc():
-    def _bufArgToBuf(self, arg, bname, shape):
+    def _bufArgToBuf(self, arg, bname, shape, const=False):
         """Buffer args to various mmFunc methods can be ndarray, or kaasBuf,
-        this converts them all to a kaasBuf as appropriate"""
+        this converts them all to a kaasBuf as appropriate. If arg is not
+        already a kaasBuf, a new one will be created with const=const."""
         if isinstance(arg, kaas.bufferSpec):
             return arg
         elif isinstance(arg, np.ndarray):
@@ -65,7 +87,7 @@ class mmFunc():
         self.cShape = (shape[0][0], shape[1][1])
 
         if constB is not None:
-            self.constB = self._bufArgToBuf(constB, 'b', self.bShape)
+            self.constB = self._bufArgToBuf(constB, 'b', self.bShape, const=True)
         else:
             self.constB = None
 
@@ -75,8 +97,11 @@ class mmFunc():
         self.dimBuf = kaas.bufferSpec(self.name + "_dims", 4*8)
 
         if mmKern == 'sgemm':
-            tileN = 32
-            tile_tb_height = 16 
+            # tileN = 32
+            # tile_tb_height = 16 
+            tileN = 16
+            tile_tb_height = 8
+
             tileM = (tileN * tile_tb_height)
             if self.aShape[0] % tileM != 0 or self.bShape[1] % tileN != 0:
                 raise RuntimeError("Arrays must be a multiple of tile size")
@@ -142,6 +167,77 @@ class mmFunc():
         self.ffCtx.kv.delete(self.name+"_dims")
 
 
+class ChainedMults():
+    def __init__(self, name, shapes, libffCtx, kaasHandle, mode='direct'):
+        """Represents a series of matmuls where each multiply takes the output
+        of the previous as A and uses a constant B. This simulates a basic
+        fully-connected neural net.
+        Shapes is a series of (N,M,K) for each layer (i.e. ncolB, nrowA, ncolA)"""
+
+        self.name = name
+        self.ffCtx = libffCtx
+        self.kHandle = kaasHandle
+        self.shapes = shapes
+
+        self.funcs = []
+
+        # We keep these around so we can run 'invokeBaseline'
+        self.bArrs = []
+
+        # prevShape is used to validate the chain dimensions, it's the C shape
+        # of the previous layer. For the first layer, we just set it to A's
+        # shape.
+        prevShape = self.shapes[0].a
+        for i,shape in enumerate(shapes):
+            if shape.a != prevShape:
+                raise RuntimeError("Invalid input shape for layer " + str(i) + " (" + str(shape.a) + ") previous layer output " + str(prevShape))
+            
+            constB = generateArr(shape.b)
+            self.bArrs.append(constB)
+            
+            self.funcs.append(mmFunc(name+"_l"+str(i),
+                (shape.a, shape.b),
+                self.ffCtx, self.kHandle, mode=mode,
+                constB=constB))
+
+            prevShape = shape.c
+
+
+    def invoke(self, inBuf, outBuf=None, times=None):
+        if isinstance(inBuf, np.ndarray):
+            self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
+            inBuf = kaas.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
+
+        if outBuf is None:
+            outBuf = kaas.bufferSpec(self.name+"_out", mmShape.nbytes(self.shapes[-1].c))
+
+        kerns = []
+        nextIn = inBuf
+        for i,f in enumerate(self.funcs):
+            if i == len(self.funcs) - 1:
+                cBuf = outBuf
+            else:
+                cBuf = kaas.bufferSpec(self.name+"_l"+str(i)+"_c",  mmShape.nbytes(self.shapes[i].c), ephemeral=True)
+
+            kerns.append(f.getKernFunc(aData = nextIn, cData = cBuf))
+            nextIn = cBuf
+
+        req = kaas.kaasReq(kerns)
+        with libff.timer("invoke", times):
+            self.kHandle.Invoke(req.toDict())
+
+        return outBuf.name
+
+
+    def invokeBaseline(self, inArr, times=None):
+        aArr = inArr
+        for bArr in self.bArrs:
+            c = np.matmul(aArr, bArr)
+            aArr = c
+
+        return c
+
+
 def getData(ffCtx, name, shape):
     raw = ffCtx.kv.get(name)
     arr = np.frombuffer(raw, dtype=np.float32)
@@ -152,7 +248,37 @@ def getData(ffCtx, name, shape):
     
     return arr
 
-def testMM(mode='direct'):
+
+def testMMChained(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.getHandle(mode, libffCtx)
+
+    shapes = [
+            mmShape(128,128,128),
+            mmShape(128,256,128),
+            mmShape(128,512,256) ]
+
+    inArr = generateArr(shapes[0].a)
+
+    func = ChainedMults("testchain", shapes, libffCtx, kaasHandle, mode=mode)
+
+    retKey = func.invoke(inArr)
+
+    testOut = getData(libffCtx, retKey, shapes[-1].c)
+
+    baseArr = func.invokeBaseline(inArr)
+
+    diff = testOut - baseArr
+    dist = np.linalg.norm(diff)
+
+    if dist > 10:
+        print("FAIL")
+        print("Distance: " + str(dist))
+    else:
+        print("PASS")
+
+
+def testMMOne(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
 
@@ -186,18 +312,18 @@ def testMM(mode='direct'):
     if dist > 1:
         print("FAIL:")
         print("Euclidean Dist: " + str(dist))
-        print(np.unique(diff))
         # print("A:\n", arrA)
         # print("B:\n", arrB)
-        print("KaaS Result:")
-        print(arrC[0][:10])
-        print("")
-
-        print("Numpy Result:")
-        print(npC[0][:10])
+        # print("KaaS Result:")
+        # print(arrC[0][:10])
+        # print("")
+        #
+        # print("Numpy Result:")
+        # print(npC[0][:10])
     else:
         print("PASS")
 
 if __name__ == "__main__":
     print("MatMul Test")
-    testMM('direct')
+    # testMMOne('direct')
+    testMMChained('direct')

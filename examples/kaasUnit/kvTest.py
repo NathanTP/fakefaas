@@ -13,7 +13,7 @@ a = np.arange(10, dtype=np.uint16)
 # kv.put('t', np.asarray(m))
 
 m = a.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
-print(type(m))
+# print(type(m))
 
 marr = ctypes.cast(m, ctypes.POINTER((ctypes.c_uint16*10)))
 b = np.frombuffer(marr.contents, dtype=np.uint16)
@@ -27,10 +27,14 @@ b = np.frombuffer(marr.contents, dtype=np.uint16)
 kv.put('t', b)
 
 r = kv.get('t')
-print(type(r))
-print(r)
+# print(type(r))
+# print(r)
 
 nm = memoryview(r)
 
 r[0] = 1
-print(bytes(nm))
+# print(bytes(nm))
+
+
+print(kv.get('x'))
+print(kv.delete('x'))

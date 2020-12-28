@@ -1,13 +1,14 @@
 import pathlib
 import math
 from pprint import pprint
+import time
+import numpy as np
 
 import libff as ff
 import libff.kv
 import libff.invoke
 
 import kaasServer as kaas
-import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 testPath = pathlib.Path(__file__).resolve().parent
@@ -55,6 +56,13 @@ def generateArr(shape):
 mmKern = "sgemm"
 # mmKern = "matmul"
 class mmFunc():
+    # tileN = 32
+    # tile_tb_height = 16 
+    tile_tb_height = 8
+
+    tileN = 16
+    tileM = (tileN * tile_tb_height)
+
     def _bufArgToBuf(self, arg, bname, shape, const=False):
         """Buffer args to various mmFunc methods can be ndarray, or kaasBuf,
         this converts them all to a kaasBuf as appropriate. If arg is not
@@ -67,13 +75,14 @@ class mmFunc():
             raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
 
         # None and ndarray need to generate a bufferSpec
-        return kaas.bufferSpec(self.name + "_" + bname, shape[0]*shape[1] * 4)
+        buf = kaas.bufferSpec(self.name + "_" + bname, shape[0]*shape[1] * 4, const=const)
+        self.generatedBufs.append(buf)
+        return buf
 
 
-    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None, mode='direct'):
+    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None):
         """Create a matmul function invoker. Shape should be the two matrix
-        dimensions [(arows, acols), (brows, bcols)]. mode can be either
-        'direct' or 'process' depending on how you'd like kaas to run.
+        dimensions [(arows, acols), (brows, bcols)].
         
         constB (a numpy array or kaas.bufferSpec) may be provided to associate
         a permanent B associated with this multiplier rather than a dynamic
@@ -81,6 +90,10 @@ class mmFunc():
         self.name = name
         self.ffCtx = libffCtx
         self.kHandle = kaasHandle
+
+        # We remember every array we've allocated in the kv store so that we
+        # can destroy them later.
+        self.generatedBufs = []
 
         self.aShape = shape[0]
         self.bShape = shape[1]
@@ -95,20 +108,15 @@ class mmFunc():
         # invocation. We upload it at registration time.
         self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64))
         self.dimBuf = kaas.bufferSpec(self.name + "_dims", 4*8)
+        self.generatedBufs.append(self.dimBuf)
 
         if mmKern == 'sgemm':
-            # tileN = 32
-            # tile_tb_height = 16 
-            tileN = 16
-            tile_tb_height = 8
-
-            tileM = (tileN * tile_tb_height)
-            if self.aShape[0] % tileM != 0 or self.bShape[1] % tileN != 0:
+            if self.aShape[0] % self.tileM != 0 or self.bShape[1] % self.tileN != 0:
                 raise RuntimeError("Arrays must be a multiple of tile size")
 
-            self.gridDim = (self.aShape[0] // tileM, self.bShape[1] // tileN, 1)
-            self.blockDim = (tileN, tile_tb_height, 1)
-            self.sharedSize = tile_tb_height * tileN * 4
+            self.gridDim = (self.aShape[0] // self.tileM, self.bShape[1] // self.tileN, 1)
+            self.blockDim = (self.tileN, self.tile_tb_height, 1)
+            self.sharedSize = self.tile_tb_height * self.tileN * 4
         else:
             threadBlock = 32
             self.gridDim = (math.ceil(self.bShape[0] / threadBlock), math.ceil(self.aShape[0] / threadBlock), 1)
@@ -161,14 +169,12 @@ class mmFunc():
         """Free any remote resources associated with this function. Any A, B,
         or C buffers (even bConst) are the responsibility of the caller to
         free."""
-        # Right now there is nothing else to do as the system doesn't support
-        # de-registration of functions. Everything related to this function
-        # will eventually get flushed out of the caches anyway.
-        self.ffCtx.kv.delete(self.name+"_dims")
+        for b in self.generatedBufs:
+            self.ffCtx.kv.delete(b.name)
 
 
 class ChainedMults():
-    def __init__(self, name, shapes, libffCtx, kaasHandle, mode='direct'):
+    def __init__(self, name, shapes, libffCtx, kaasHandle):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
@@ -197,16 +203,22 @@ class ChainedMults():
             
             self.funcs.append(mmFunc(name+"_l"+str(i),
                 (shape.a, shape.b),
-                self.ffCtx, self.kHandle, mode=mode,
+                self.ffCtx, self.kHandle,
                 constB=constB))
 
             prevShape = shape.c
 
 
+    def destroy(self):
+        for f in self.funcs:
+            f.destroy()
+
     def invoke(self, inBuf, outBuf=None, times=None):
+        generatedInput = False
         if isinstance(inBuf, np.ndarray):
             self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
             inBuf = kaas.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
+            generatedInput = True
 
         if outBuf is None:
             outBuf = kaas.bufferSpec(self.name+"_out", mmShape.nbytes(self.shapes[-1].c))
@@ -226,6 +238,9 @@ class ChainedMults():
         with libff.timer("invoke", times):
             self.kHandle.Invoke(req.toDict())
 
+        if generatedInput:
+            self.ffCtx.kv.delete(inBuf.name)
+
         return outBuf.name
 
 
@@ -236,6 +251,11 @@ class ChainedMults():
             aArr = c
 
         return c
+
+
+    def destroy(self):
+        for func in self.funcs:
+            func.destroy()
 
 
 def getData(ffCtx, name, shape):
@@ -249,6 +269,169 @@ def getData(ffCtx, name, shape):
     return arr
 
 
+class benchClient():
+
+    @staticmethod
+    def poisson(target):
+        """Returns a poisson distribution generator suitable for benchClient
+        initalization. Target is the desired mean latency in ms."""
+        rng = np.random.default_rng()
+        return lambda: rng.poisson(target)
+    
+
+    @staticmethod
+    def zipf(a, scale=1, maximum=None):
+        """Returns a zipf generator suitable for benchClient initialization. a
+        is the zip factor. Zipf returns values starting at 1ms with an
+        unbounded upper limit. You can change this by applying a scaling factor
+        and maximum value."""
+        rng = np.random.default_rng()
+
+        def sampler():
+            z = rng.zipf(a)*scale
+            if maximum is not None and z > maximum:
+                z = maximum
+            return z
+
+        return sampler
+            
+
+    @staticmethod
+    def sideLenFromSize(depth, nbyte):
+        """Returns the closest legal sideLen that would use at most nbyte bytes of
+        arrays for depth."""
+        # XXX nbyte = (nmat * (sideLen**2)) * 4
+        # (nbyte / 4) / nmat = sideLen**2
+        # sqrt((nbyte / 4) / nmat) = sideLen
+
+         # 1 mtx for the input, depth matrices for the static, depth matrices for
+        # the outputs
+        nMatrix = 1 + (2*depth)
+
+        # Biggest sidelen that would fit in nbyte
+        sideLen = math.isqrt((nbyte // 4) // nMatrix)
+
+        if sideLen < mmFunc.tileM:
+            # it's impossible
+            return None
+       
+        # Round down to the nearest multiple of tileM
+        sideLen -= sideLen % mmFunc.tileM
+
+        return sideLen
+
+
+    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, rng=None):
+        """Run a single benchmark client making mm requests. Depth is how many
+        matmuls to chain together in a single call. sideLen is the number of
+        elements in one side of an array (benchClient works only with square
+        matrices). sideLen must be a multiple of mmFunc.tileM. Each matmul in
+        the chain will use one static array and one dynamic array.
+        
+        rng: is used to generate inter-request times for invoke(). The current
+        implementation uses synchronous requests, so this is really the delay
+        after completion rather than a true inter-arrival period. it should be
+        a function with no arguments that returns a wait time in ms. If rng is
+        None, invokeDelayed and invoke are identical. You may use
+        benchClient.poisson() or benchClient.zipf() to generate an rng.
+        
+        Scale and depth must lead to reasonably sized matrices
+        (mmFunc.matSizeA). The limits are:
+            scale > (mmFunc.matSizeA * (1 + 2*depth))*4
+            scale a multiple of mmFunc.matSizeA*4
+        """
+        self.ff = ffCtx
+        self.kaas = kaasCtx
+        self.lastRetKey = None
+        self.rng = rng
+        self.name = name
+        self.generatedBufs = []
+
+        # Used to name any generated arrays
+        self.nextArrayID = 0
+
+        # 1 mtx for the input, depth matrices for the static, depth matrices for
+        # the outputs
+        nMatrix = 1 + (2*depth)
+        self.nbytes = (nMatrix * (sideLen**2)) * 4
+
+        # Uniform shape for now
+        self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
+
+        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas)
+
+
+    def invoke(self, inArr):
+        """Invoke the client's function once, leaving the output in the kv
+        store. If this object was created with an rng, invokeDelayed will wait
+        a random amount of time before invoking. You can get the output of the
+        last invocation with benchClient.getResult()."""
+        if self.rng is not None:
+            time.sleep(self.rng() / 1000)
+        self.lastRetKey = self.func.invoke(inArr)
+        return self.lastRetKey
+
+
+    def invokeN(self, n, inArrs=1, fetchResult=False):
+        """Invoke the client n times, waiting self.rng() ms inbetween
+        invocations. inArrs may be a list of arrays (either a numpy.ndarray or
+        kaas.bufferSpec) to use as inputs, if len(inArrs) < n, the inputs will
+        be invoked round-robin. If inArrs is a scalar, the benchClient will
+        generate random arrays for you. Each array will only be uploaded to the
+        kv store once. However, they will not be marked as constant and may not
+        be cacheable (until we implement a real consistency protocol). You may
+        optionally read the result of each invocation back to the client. This
+        is only for benchmarking purposes, the result is immediately
+        discarded."""
+
+        if isinstance(inArrs, int):
+            inBufs = []
+            for i in range(inArrs):
+                arr = generateArr(self.shapes[0].a)
+                inBufs.append(self._bufArgToBuf(arr))
+        else:
+            inBufs = [ self._bufArgToBuf(arr) for arr in inArrs ]
+
+        for i in range(n):
+            self.invoke(inBufs[ i % len(inBufs) ])
+            if fetchResult:
+                # Read the result and immediately discard to include result
+                # reading time in the benchmark
+                self.getResult()
+
+
+    def getResult(self):
+        if self.lastRetKey is None:
+            raise RuntimeError("Must invoke benchClient at least once to get a result")
+
+        return getData(self.ff, self.lastRetKey, self.shapes[-1].c)       
+        
+
+    def destroy(self):
+        self.func.destroy()
+
+        for b in self.generatedBufs:
+            self.ff.kv.delete(b.name)
+
+
+    def _bufArgToBuf(self, arg, const=False):
+        """Buffer args to various mmFunc methods can be ndarray or kaasBuf,
+        this converts them all to a kaasBuf as appropriate. If arg is not
+        already a kaasBuf, a new one will be created with const=const."""
+        if isinstance(arg, kaas.bufferSpec):
+            return arg
+        elif isinstance(arg, np.ndarray):
+            arrName = self.name + "_array" + str(self.nextArrayID)
+            self.nextArrayID += 1
+
+            self.ff.kv.put(arrName, arg)
+            b = kaas.bufferSpec(arrName, arg.nbytes)
+            self.generatedBufs.append(b)
+            return b
+        else:
+            raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
+
+
 def testMMChained(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
@@ -260,13 +443,15 @@ def testMMChained(mode='direct'):
 
     inArr = generateArr(shapes[0].a)
 
-    func = ChainedMults("testchain", shapes, libffCtx, kaasHandle, mode=mode)
+    func = ChainedMults("testchain", shapes, libffCtx, kaasHandle)
 
     retKey = func.invoke(inArr)
 
     testOut = getData(libffCtx, retKey, shapes[-1].c)
 
     baseArr = func.invokeBaseline(inArr)
+
+    func.destroy()
 
     diff = testOut - baseArr
     dist = np.linalg.norm(diff)
@@ -290,7 +475,7 @@ def testMMOne(mode='direct'):
     libffCtx.kv.put("test_b", arrB)
 
     shape = [arrA.shape, arrB.shape]
-    func = mmFunc('test', shape, libffCtx, kaasHandle, mode=mode)
+    func = mmFunc('test', shape, libffCtx, kaasHandle)
 
     rKey = func.invoke()
     
@@ -312,18 +497,27 @@ def testMMOne(mode='direct'):
     if dist > 1:
         print("FAIL:")
         print("Euclidean Dist: " + str(dist))
-        # print("A:\n", arrA)
-        # print("B:\n", arrB)
-        # print("KaaS Result:")
-        # print(arrC[0][:10])
-        # print("")
-        #
-        # print("Numpy Result:")
-        # print(npC[0][:10])
     else:
         print("PASS")
 
+
+def testClient(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.getHandle(mode, libffCtx)
+    clientPlain = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle)
+    clientPlain.invokeN(5)
+    clientPlain.destroy()
+
+    clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
+    clientPoisson.invokeN(5, inArrs=5)
+    clientPoisson.destroy()
+
+    clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
+    clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
+    clientZipf.destroy()
+
+
 if __name__ == "__main__":
-    print("MatMul Test")
     # testMMOne('direct')
-    testMMChained('direct')
+    # testMMChained('direct')
+    testClient('direct')

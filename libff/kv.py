@@ -4,6 +4,14 @@ import abc
 import copy
 from .util import *
 
+class KVKeyError(Exception):
+    def __init__(self, key):
+        self.key = key
+
+    def __str__(self):
+        return "Key " + str(self.key) + " does not exist"
+    
+
 class kv(abc.ABC):
     """A bare-bones key-value store abstraction."""
 
@@ -18,7 +26,7 @@ class kv(abc.ABC):
     def get(self, k: str):
         """Retrieve the value at key k. If deserialize is set, the value will
         be deserialized to a native python object before returning, otherwise
-        bytes will be returned."""
+        bytes will be returned. Raises KVKeyError if the key does not exist."""
         pass
 
 
@@ -26,7 +34,8 @@ class kv(abc.ABC):
     def delete(self, *keys):
         """Remove key(s) k from the store. This is more of a hint than a
         guarantee, k may or may not really be removed, but you shouldn't refer
-        to it after."""
+        to it after. It is safe to delete a non-existent (or already deleted)
+        key."""
         pass
 
 
@@ -55,6 +64,9 @@ class Redis:
         with timer("read", profile):
             raw = self.handle.get(k)
 
+        if raw is None:
+            raise KVKeyError(k)
+
         with timer("deserialize", profile):
             if self.serialize and raw is not None:
                 return pickle.loads(raw)
@@ -64,7 +76,8 @@ class Redis:
 
     def delete(self, *keys, profile=None):
         with timer("delete", profile):
-            self.handle.delete(*keys)
+            ret = self.handle.delete(*keys)
+
 
 class Local:
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is
@@ -111,4 +124,7 @@ class Local:
     def delete(self, *keys, profile=None):
         with timer("delete", profile):
             for k in keys:
-                del self.store[k]
+                try:
+                    del self.store[k]
+                except KeyError:
+                    pass

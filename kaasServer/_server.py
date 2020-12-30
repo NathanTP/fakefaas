@@ -9,12 +9,65 @@ import pathlib
 import collections
 import logging
 from pprint import pprint
+import time
 
 import libff as ff
 import libff.kv
 
 # logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
+
+# Profiling level sets how aggressive we are in profiling.
+#   - 0 no profiling
+#   - 1 metrics that will have little effect on performance
+#   - 2 All metrics. This may have a performance impact, particularly for small kernels and/or data sizes.  
+profLevel=2
+
+# This is a global reference to the current ff.profCollection (reset for each call)
+profs = None
+
+def updateProf(name, val, level=1):
+    if level <= profLevel:
+        profs[name].update(val)
+
+
+def getProf(level=1):
+    """Returns the profs object (ff.profCollection) for this level. If level is
+    above the current profLevel, Non is returned. This is suitable for use in a
+    ff.timer context."""
+    if level <= profLevel:
+        return profs
+    else:
+        return None
+
+
+# A list of all metrics that must be finalized after each invocation
+# n_* is an event count, s_* is a size metric in bytes, t_* is a time measurement in ms
+eventMetrics1 = [
+        'n_hostD$Miss',
+        'n_hostD$Hit',
+        's_hostD$Load',
+        't_hostD$Load',
+        'n_hostD$WriteBack',
+        't_hostD$WriteBack',
+        'n_devD$Hit',
+        'n_devD$Miss',
+        'n_devD$Evict',
+        't_devD$Evict',
+        's_devD$WriteBack',
+        's_htod',
+        's_dtoh',
+        't_htod',
+        't_dtoh',
+        't_zero',
+        'n_k$Miss',
+        'n_k$Hit',
+        't_kernelLoad'
+        ]
+
+eventMetrics2 = [
+        't_kernel'
+        ]
 
 class kaasBuf():
     @classmethod
@@ -77,13 +130,17 @@ class kaasBuf():
             return
         else:
             logging.debug("Moving " + self.name + " to device")
+            updateProf('s_htod', self.size)
+
             self.dbuf = cuda.mem_alloc(self.size)
 
             if self.hbuf is None:
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
-                cuda.memset_d8(self.dbuf, 0, self.size)
+                with ff.timer('t_zero', getProf(), final=False):
+                    cuda.memset_d8(self.dbuf, 0, self.size)
             else:
-                cuda.memcpy_htod(self.dbuf, self.hbuf)
+                with ff.timer('t_htod', getProf(), final=False):
+                    cuda.memcpy_htod(self.dbuf, self.hbuf)
 
             self.onDevice = True
 
@@ -97,10 +154,12 @@ class kaasBuf():
             return
         else:
             logging.debug("Moving {}b from device (0x{}) ".format(self.size, hex(int(self.dbuf))) + self.name + " to host")
+            updateProf('s_dtoh', self.size)
             if self.hbuf is None:
                 self.hbuf = memoryview(bytearray(self.size))
 
-            cuda.memcpy_dtoh(self.hbuf, self.dbuf)
+            with ff.timer('t_dtoh', getProf(), final=False):
+                cuda.memcpy_dtoh(self.hbuf, self.dbuf)
 
 
     def freeDevice(self):
@@ -115,12 +174,13 @@ class kaasBuf():
 
     def clear(self):
         logging.debug("Clearing existing buffer " + self.name)
-        if self.onDevice:
-            cuda.memset_d8(self.dbuf, 0, self.size)
-            self.hbuf = None
-        else:
-            if self.hbuf is not None:
-                ctypes.memset(self.hbuf, 0, self.size)
+        with ff.timer('t_zero', getProf(), final=False):
+            if self.onDevice:
+                cuda.memset_d8(self.dbuf, 0, self.size)
+                self.hbuf = None
+            else:
+                if self.hbuf is not None:
+                    ctypes.memset(self.hbuf, 0, self.size)
 
 
 class kaasFunc():
@@ -156,7 +216,16 @@ class kaasFunc():
 
         logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
             ", ".join([ str(l) for l in literalVals] + [ b.name for b in bufs])))
-        self.func.prepared_call(gridDim, blockDim, *args, shared_size=sharedSize)
+
+        with ff.timer('t_kernel', getProf(level=2), final=False):
+            self.func.prepared_call(gridDim, blockDim, *args, shared_size=sharedSize)
+
+            # This is needed for profiling, but not for correctness (the CUDA
+            # driver will synchronize when necessary). In the current
+            # implementation we don't do anything asynchronously so it doesn't
+            # matter but eventually we'll want the asynchrony...
+            if profLevel >= 2:
+                pycuda.driver.Context.synchronize()
 
 
 class kernelCache():
@@ -166,12 +235,16 @@ class kernelCache():
 
     def get(self, spec):
         if spec.name not in self.kerns:
-            if spec.libPath not in self.libs:
-                self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
+            updateProf('n_k$Miss', 1)
+            with ff.timer('t_kernelLoad', getProf(), final=False):
+                if spec.libPath not in self.libs:
+                    self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
 
-            nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)
-            litTypes = [ l.t for l in spec.literals ]
-            self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, litTypes, nBuf)
+                nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)
+                litTypes = [ l.t for l in spec.literals ]
+                self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, litTypes, nBuf)
+        else:
+            updateProf('n_k$Hit', 1)
 
         return self.kerns[spec.name]
 
@@ -245,18 +318,22 @@ class bufferCache():
 
     def _makeRoom(self, buf):
         if buf.onDevice:
-            return
+            updateProf('n_devD$Hit', 1)
+        else:
+            updateProf('n_devD$Miss', 1)
+            with ff.timer('t_devD$Evict', getProf(), final=False):
+                while self.cap - self.size < buf.size:
+                    updateProf('n_devD$Evict', 1)
+                    # Pull from general pool first, only touch const if you have to
+                    b = self.policy.pop()
+                    logging.debug("Evicting " + b.name)
 
-        while self.cap - self.size < buf.size:
-            # Pull from general pool first, only touch const if you have to
-            b = self.policy.pop()
-            logging.debug("Evicting " + b.name)
+                    if b.dirty:
+                        updateProf('s_devD$WriteBack', b.size())
+                        b.toHost()
 
-            if b.dirty:
-                b.toHost()
-
-            b.freeDevice()
-            self.size -= b.size()
+                    b.freeDevice()
+                    self.size -= b.size()
 
 
     def load(self, bSpec, overwrite=False):
@@ -275,6 +352,7 @@ class bufferCache():
 
         if bSpec.name in self.bufs:
             logging.debug("Loading from Cache: " + bSpec.name)
+            updateProf('n_hostD$Hit', 1)
             buf = self.bufs[bSpec.name]
 
             if overwrite:
@@ -284,6 +362,7 @@ class bufferCache():
             if buf.onDevice:
                 self.policy.remove(buf)
         else:
+            updateProf('n_hostD$Miss', 1)
             if bSpec.ephemeral or overwrite:
                 logging.debug("Loading (new buffer): " + bSpec.name)
                 buf = kaasBuf.fromSpec(bSpec)
@@ -297,7 +376,9 @@ class bufferCache():
                     buf = kaasBuf.fromSpec(bSpec)
                 else:
                     logging.debug("Loading from KV: " + bSpec.name)
-                    buf = kaasBuf.fromSpec(bSpec, raw)
+                    updateProf('s_hostD$Load', bSpec.size)
+                    with ff.timer('t_hostD$Load', getProf(), final=False):
+                        buf = kaasBuf.fromSpec(bSpec, raw)
 
         self._makeRoom(buf)
         buf.toDevice()
@@ -327,8 +408,11 @@ class bufferCache():
 
 
     def flush(self):
-        for b in self.dirtyBufs.values():
-            self._flushOne(b)
+        updateProf('n_hostD$WriteBack', len(self.dirtyBufs))
+        with ff.timer('t_hostD$WriteBack', getProf(), final=False):
+            for b in self.dirtyBufs.values():
+                self._flushOne(b)
+
         self.dirtyBufs = {}
 
 
@@ -359,8 +443,8 @@ class bufferCache():
 
 kCache = kernelCache()
 
-# I think the device has 4GB, I'll keep it conservative for now
-bCache = bufferCache(1024*1024*2)
+# I think the device has 4GB
+bCache = bufferCache(1024*1024*1024*4)
 
 def kaasServeInternal(req, ctx):
     """Internal implementation of kaas execution. Req is a kaas.kaasReq, not a
@@ -369,6 +453,9 @@ def kaasServeInternal(req, ctx):
     # This gets reset every call because libff only gives us the kv handle per
     # call and it could (in theory) change in some way between calls.
     bCache.setKV(ctx.kv)
+
+    global profs
+    profs = ctx.profs
 
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)
@@ -396,5 +483,12 @@ def kaasServeInternal(req, ctx):
     # private state into whatever consistency properties the KV gives us.
     bCache.flush()
     bCache.clearEphemerals()
+
+    if profLevel >= 1:
+        for metric in eventMetrics1:
+            profs[metric].increment()
+    if profLevel >= 2:
+        for metric in eventMetrics2:
+            profs[metric].increment()
 
     return {}

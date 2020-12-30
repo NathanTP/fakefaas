@@ -4,10 +4,11 @@ import subprocess as sp
 import abc
 import importlib.util
 import argparse
-import json
+import jsonpickle as json
 import traceback
 from . import array
 from . import kv 
+from . import util
 
 class InvocationError(Exception):
     def __init__(self, msg):
@@ -21,7 +22,7 @@ class RemoteFunc(abc.ABC):
     """Represents a remote (or at least logically separate) function"""
 
     @abc.abstractmethod
-    def __init__(self, packagePath, funcName, arrayMnt):
+    def __init__(self, packagePath, funcName, context):
         """Create a remote function from the provided package.funcName.
         arrayMnt should point to wherever child workers should look for
         arrays."""
@@ -32,6 +33,11 @@ class RemoteFunc(abc.ABC):
     def Invoke(self, arg):
         """Invoke the function with the dictionary-typed argument arg. Will
         return the response dictionary from the function."""
+        pass
+
+    def Stats(self, reset=False):
+        """Report the statistics collected so far. If reset is True, stats will
+        be cleared."""
         pass
 
     @abc.abstractmethod
@@ -46,6 +52,7 @@ class RemoteCtx():
     def __init__(self, arrayStore, kvStore):
         self.array = arrayStore
         self.kv = kvStore
+        self.profs = util.profCollection() 
 
 
 # We avoid importing and registering the same package multiple times, doing so
@@ -64,26 +71,44 @@ class DirectRemoteFunc(RemoteFunc):
 
     def __init__(self, packagePath, funcName, context):
         self.fName = funcName
+
+        # The profs in ctx are used only for passing to the function,
+        # self.profs is for the client-side RemoteFun
         self.ctx = context
-        if packagePath in _importedFuncPackages:
-            self.funcs = _importedFuncPackages[packagePath]
-        else:
-            name = packagePath.stem
-            if packagePath.is_dir():
-                packagePath = packagePath / "__init__.py"
+        self.profs = util.profCollection() 
 
-            spec = importlib.util.spec_from_file_location(name, packagePath)
-            if spec is None:
-                raise RuntimeError("Failed to load function from " + str(packagePath))
+        with util.timer("init", self.profs):
+            if packagePath in _importedFuncPackages:
+                self.funcs = _importedFuncPackages[packagePath]
+            else:
+                name = packagePath.stem
+                if packagePath.is_dir():
+                    packagePath = packagePath / "__init__.py"
 
-            package = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(package)
-            self.funcs = package.LibffInvokeRegister()
-            _importedFuncPackages[packagePath] = self.funcs 
+                spec = importlib.util.spec_from_file_location(name, packagePath)
+                if spec is None:
+                    raise RuntimeError("Failed to load function from " + str(packagePath))
+
+                package = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(package)
+                self.funcs = package.LibffInvokeRegister()
+                _importedFuncPackages[packagePath] = self.funcs 
 
 
     def Invoke(self, arg):
-        return self.funcs[self.fName](arg, self.ctx)
+        with util.timer('invoke', self.profs):
+            return self.funcs[self.fName](arg, self.ctx)
+
+
+    def Stats(self, reset=False):
+        report = { "LocalStats" : self.profs.report(),
+                   "WorkerStats" : self.ctx.profs.report() }
+
+        if reset:
+            self.profs = util.profCollection() 
+            self.ctx.profs = util.profCollection() 
+
+        return report 
 
 
     def Close(self):
@@ -94,24 +119,39 @@ class DirectRemoteFunc(RemoteFunc):
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context):
-        if context.array is not None:
-            arrayMnt = context.array.FileMount
-        else:
-            arrayMnt = ""
+        self.profs = util.profCollection() 
 
-        if packagePath in _runningFuncProcesses:
-            self.proc = _runningFuncProcesses[packagePath]
-        else:
+        # Unfortunately, this doesn't measure the full init time because it is
+        # asynchronous. Creating a ProcessRemoteFunc starts the process but
+        # doesn't wait for it to fully initialize. In the future we may be able
+        # to capture this in invoke by adding a 'ready' signal from the process
+        # that we wait for before invoking (right now stdin just buffers the
+        # input while the process starts up).
+        with util.timer('init', self.profs):
             if context.array is not None:
                 arrayMnt = context.array.FileMount
-                self.proc = sp.Popen(["python3", str(packagePath), '-m', arrayMnt], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
             else:
-                cmd = ["python3", '-m', str(packagePath.name)]
-                self.proc = sp.Popen(["python3", '-m', str(packagePath.name)],
-                        stdin=sp.PIPE, stdout=sp.PIPE, text=True,
-                        cwd=packagePath.parent)
+                arrayMnt = ""
 
-            _runningFuncProcesses[packagePath] = self.proc
+            if packagePath in _runningFuncProcesses:
+                self.proc = _runningFuncProcesses[packagePath]
+            else:
+                # Python's package management is garbage, if the worker is
+                # a module, you have to run it with -m, but if it's a
+                # stand-alone file, you can't use -m and have to call it
+                # directly.
+                if packagePath.is_dir():
+                    cmd = ["python3", "-m", str(packagePath.name)]
+                else:
+                    cmd = ["python3", str(packagePath.name)]
+
+                if context.array is not None:
+                    arrayMnt = context.array.FileMount
+                    cmd += ['-m', arrayMnt]
+
+                self.proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=packagePath.parent)
+
+                _runningFuncProcesses[packagePath] = self.proc
 
         self.fname = funcName
         self.packagePath = packagePath
@@ -119,6 +159,7 @@ class ProcessRemoteFunc(RemoteFunc):
 
     def Invoke(self, arg):
         req = { "command" : "invoke",
+                "stats" : self.ctx.profs,
                 "fName" : self.fname,
                 "fArg" : arg }
 
@@ -127,14 +168,36 @@ class ProcessRemoteFunc(RemoteFunc):
         #     out, err = self.proc.communicate()
         #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
 
-        self.proc.stdin.write(json.dumps(req) + "\n")
-        self.proc.stdin.flush()
-        rawResp = self.proc.stdout.readline()
-        resp = json.loads(rawResp)
+        with util.timer('requestEncode', self.profs):
+            self.proc.stdin.write(json.dumps(req) + "\n")
+            self.proc.stdin.flush()
+
+        with util.timer('invoke', self.profs):
+            rawResp = self.proc.stdout.readline()
+
+        with util.timer('responseDecode', self.profs):
+            try:
+                resp = json.loads(rawResp)
+            except:
+                raise InvocationError(rawResp)
+        
         if resp['error'] is not None:
             raise InvocationError(resp['error'])
 
+        self.ctx.profs = resp['stats']
         return resp['resp']
+
+
+    def Stats(self, reset=False):
+        report = { "LocalStats" : util.reportTimers(self.profs),
+                   "WorkerStats" : util.reportTimers(self.ctx.profs) }
+
+        if reset:
+            self.profs = util.profCollection()
+            self.ctx.profs = util.profCollection()
+
+        return report 
+
 
     def Close(self):
         req = { "command" : "reportStats" }
@@ -185,11 +248,12 @@ def RemoteProcessServer(funcs, serverArgs):
         try:
             if req['command'] == 'invoke':
                 if req['fName'] in funcs:
+                    ctx.profs = req['stats']
                     resp = funcs[req['fName']](req['fArg'], ctx)
                 else:
                     _remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
 
-                _remoteServerRespond({"error" : None, "resp" : resp})
+                _remoteServerRespond({"error" : None, "resp" : resp, 'stats' : ctx.profs})
 
             elif req['command'] == 'reportStats':
                 _remoteServerRespond({"error" : None, "stats" : {}})

@@ -174,6 +174,6 @@ if __name__ == "__main__":
     # testPartialDirectNoLibff(1024)
 
     # remFunc = libff.invoke.ProcessRemoteFunc(pathlib.Path("./worker.py").resolve(), "sortPartial")
-    # funcClass = libff.invoke.ProcessRemoteFunc
-    funcClass = libff.invoke.DirectRemoteFunc
+    funcClass = libff.invoke.ProcessRemoteFunc
+    # funcClass = libff.invoke.DirectRemoteFunc
     testPartialRemote(funcClass, 1024)

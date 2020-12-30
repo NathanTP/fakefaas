@@ -62,6 +62,8 @@ def testDoublify(mode='direct'):
     else:
         print("PASS")
 
+    print("Stats: ")
+    print(kaasHandle.Stats())
 
 def testDotProd(mode='direct'):
     nElem = 1024
@@ -116,6 +118,9 @@ def testDotProd(mode='direct'):
         print("Got: ", c)
     else:
         print("PASS")
+
+    print("Stats: ")
+    pprint(kaasHandle.Stats())
 
 
 rng = np.random.default_rng()
@@ -186,11 +191,11 @@ def testMatMul(mode='direct'):
 
 if __name__ == "__main__":
     # print("Double Test:")
-    # testDoublify('process')
+    # testDoublify('direct')
 
-    # print("Dot Product Test:") 
-    # testDotProd('direct')
+    print("Dot Product Test:") 
+    testDotProd('direct')
 
-    print("MatMul Test")
-    testMatMul('direct')
+    # print("MatMul Test")
+    # testMatMul('direct')
     # testMatMul('process')

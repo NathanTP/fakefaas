@@ -5,3 +5,4 @@ transformers
 onnx
 argparse
 redis
+jsonpickle

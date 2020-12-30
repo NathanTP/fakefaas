@@ -6,7 +6,7 @@ import ctypes
 import shutil
 import itertools
 import operator
-import json
+import jsonpickle as json
 import numpy as np
 
 class ArrayError(Exception):

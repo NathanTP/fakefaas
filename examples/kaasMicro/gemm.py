@@ -321,6 +321,14 @@ class benchClient():
         return sideLen
 
 
+    @staticmethod
+    def sizeFromSideLen(depth, sideLen):
+        """Returns the number of bytes of device memory that will be needed for
+        the given depth and matrix side length (in elements)"""
+        nMatrix = 1 + (2*depth)
+        return (nMatrix * (sideLen**2)) * 4
+
+
     def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, rng=None):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
@@ -350,10 +358,7 @@ class benchClient():
         # Used to name any generated arrays
         self.nextArrayID = 0
 
-        # 1 mtx for the input, depth matrices for the static, depth matrices for
-        # the outputs
-        nMatrix = 1 + (2*depth)
-        self.nbytes = (nMatrix * (sideLen**2)) * 4
+        self.nbytes = self.sizeFromSideLen(depth, sideLen)
 
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
@@ -504,20 +509,25 @@ def testMMOne(mode='direct'):
 def testClient(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
-    clientPlain = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle)
+    # clientPlain = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle)
+    clientPlain = benchClient("benchClientTest", 4, 1024*2, libffCtx, kaasHandle)
     clientPlain.invokeN(5)
     clientPlain.destroy()
+    
+    print("Stats: ")
+    pprint(kaasHandle.Stats())
 
-    clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
-    clientPoisson.invokeN(5, inArrs=5)
-    clientPoisson.destroy()
-
-    clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
-    clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
-    clientZipf.destroy()
+    # clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
+    # clientPoisson.invokeN(5, inArrs=5)
+    # clientPoisson.destroy()
+    #
+    # clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
+    # clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
+    # clientZipf.destroy()
 
 
 if __name__ == "__main__":
+    # print(benchClient.sizeFromSideLen(3, 1024*8) / (1024*1024*1024))
     # testMMOne('direct')
     # testMMChained('direct')
     testClient('direct')

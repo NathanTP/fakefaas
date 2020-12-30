@@ -15,13 +15,7 @@ import libff.invoke
 
 serverPackage = pathlib.Path(__file__).resolve().parent
 
-# Python's module system is garbage, I'm sure there's a 'right' way to do this
-# but I can't be bothered
-# print(serverPath.parent)
-# sys.path.append(serverPath.parent)
-
 from ._server import *
-
 
 class KaasError(Exception):
     def __init__(self, cause):

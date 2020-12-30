@@ -79,7 +79,6 @@ class profCollection(collections.abc.MutableMapping):
     def report(self):
         return { name : v.mean() for name, v in self.profs.items() }
 
-
 # ms
 timeScale = 1000
 

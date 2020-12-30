@@ -62,7 +62,8 @@ eventMetrics1 = [
         't_zero',
         'n_k$Miss',
         'n_k$Hit',
-        't_kernelLoad'
+        't_kernelLoad',
+        't_cudaMM'
         ]
 
 eventMetrics2 = [
@@ -132,7 +133,8 @@ class kaasBuf():
             logging.debug("Moving " + self.name + " to device")
             updateProf('s_htod', self.size)
 
-            self.dbuf = cuda.mem_alloc(self.size)
+            with ff.timer('t_cudaMM', getProf(), final=False):
+                self.dbuf = cuda.mem_alloc(self.size)
 
             if self.hbuf is None:
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
@@ -167,7 +169,8 @@ class kaasBuf():
         if not self.onDevice:
             return
         else:
-            self.dbuf.free()
+            with ff.timer('t_cudaMM', getProf(), final=False):
+                self.dbuf.free()
             self.dbuf = None
             self.onDevice = False
 
@@ -208,7 +211,7 @@ class kaasFunc():
         dAddrs = []
         for b in bufs:
             if not b.onDevice:
-                raise RuntimeError("Provided buffer was not resident on the device: " + b.name)
+                raise RuntimeError("Provided buffer was not resident on the device (insufficient memory?): " + b.name)
 
             dAddrs.append(b.dbuf)
 
@@ -403,15 +406,15 @@ class bufferCache():
                 # Data are stored as numpy arrays because memoryviews can't be
                 # pickled. This should still be zero copy.
                 logging.debug("Writing back to kv: " + buf.name)
-                self.kv.put(buf.name, np.asarray(buf.hbuf))
+                with ff.timer('t_hostD$WriteBack', getProf(), final=False):
+                    self.kv.put(buf.name, np.asarray(buf.hbuf))
             buf.dirty = False
 
 
     def flush(self):
         updateProf('n_hostD$WriteBack', len(self.dirtyBufs))
-        with ff.timer('t_hostD$WriteBack', getProf(), final=False):
-            for b in self.dirtyBufs.values():
-                self._flushOne(b)
+        for b in self.dirtyBufs.values():
+            self._flushOne(b)
 
         self.dirtyBufs = {}
 
@@ -450,6 +453,7 @@ def kaasServeInternal(req, ctx):
     """Internal implementation of kaas execution. Req is a kaas.kaasReq, not a
     dictionary"""
 
+    start = time.time()
     # This gets reset every call because libff only gives us the kv handle per
     # call and it could (in theory) change in some way between calls.
     bCache.setKV(ctx.kv)
@@ -460,7 +464,8 @@ def kaasServeInternal(req, ctx):
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)
 
-        # XXX Too lazy to check this for now, we assume all the buffers will fit.
+        # The user should ensure that all buffers will fit on the device.
+        # Invoke() will catch the mistake if they don't.
         inputs = [ bCache.load(b) for b in kSpec.inputs ]
         temps = [ bCache.load(b) for b in kSpec.temps ]
         outputs = [ bCache.load(b, overwrite=True) for b in kSpec.uniqueOutputs ]

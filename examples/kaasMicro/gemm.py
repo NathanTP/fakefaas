@@ -3,6 +3,7 @@ import math
 from pprint import pprint
 import time
 import numpy as np
+import csv
 
 import libff as ff
 import libff.kv
@@ -14,6 +15,8 @@ redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR
 testPath = pathlib.Path(__file__).resolve().parent
 # colMajor = True
 colMajor = False
+
+DEVICE_MEM_CAP = 1024*1024*1024*4
 
 def getCtx(remote=False):
     if remote:
@@ -360,6 +363,9 @@ class benchClient():
 
         self.nbytes = self.sizeFromSideLen(depth, sideLen)
 
+        if self.nbytes > DEVICE_MEM_CAP:
+            raise RuntimeError("Requested configuration would not fit on the device!")
+
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
@@ -510,12 +516,21 @@ def testClient(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
     kaasHandle = kaas.getHandle(mode, libffCtx)
     # clientPlain = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle)
-    clientPlain = benchClient("benchClientTest", 4, 1024*2, libffCtx, kaasHandle)
-    clientPlain.invokeN(5)
+    clientPlain = benchClient("benchClientTest", 4, 1024*4, libffCtx, kaasHandle)
+    clientPlain.invokeN(1)
     clientPlain.destroy()
     
     print("Stats: ")
-    pprint(kaasHandle.Stats())
+    s = kaasHandle.Stats()
+
+    timeMetricsTotal = 0
+    for k,v in s['WorkerStats'].items():
+        if k[:2] == 't_':
+            timeMetricsTotal += v
+    print("Total Time: ", s['LocalStats']['invoke'])
+    print("Time Metrics Total: ", timeMetricsTotal)
+    print("Missing Time: ", s['LocalStats']['invoke'] - timeMetricsTotal)
+    pprint(s)
 
     # clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
     # clientPoisson.invokeN(5, inArrs=5)
@@ -526,8 +541,67 @@ def testClient(mode='direct'):
     # clientZipf.destroy()
 
 
+def startKaas(mode='direct'):
+    """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.getHandle(mode, libffCtx)
+
+    kern = kaas.kernelSpec(testPath / 'kerns' / 'noop.cubin', 'noop', (1,1,1), (1,1,1))
+    kaasHandle.Invoke(kaas.kaasReq([kern]).toDict())
+    kaasHandle.Stats(reset=True)
+
+    return (libffCtx, kaasHandle)
+
+
+def benchmark(name, depth, size, mode, nrepeat, outPath=None):
+    """Run a benchmark, outputing a CSV named ${name}.csv with the name column
+    set to name.  The benchmark will be run with the depth,size,mode and
+    repeated nrpeat times + 1 (cold start + nrepeat warm starts).
+
+    If outPath is set, the results will be appended to that CSV file instead
+    of creating a new one."""
+
+    ffCtx, kaasCtx = startKaas(mode)
+    client = benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx)
+
+    configDict = { 'name' : name, 'mode' : mode, 'nrepeat' : nrepeat,
+            'matDim' : size, 'depth' : depth, 'nbyte' :  benchClient.sizeFromSideLen(depth, size)}
+
+    # Cold Start
+    client.invokeN(1)
+    coldStats = kaasCtx.Stats(reset=True)['WorkerStats']
+    coldStats['warm'] = False 
+    coldStats = {**coldStats, **configDict}
+
+    # Warm Start
+    client.invokeN(nrepeat)
+    warmStats = kaasCtx.Stats(reset=True)['WorkerStats']
+    warmStats['warm'] = True
+    warmStats = {**warmStats, **configDict}
+
+    if outPath is not None:
+        outPath = pathlib.Path('.').resolve() / outPath
+    else:
+        outPath = pathlib.Path('.').resolve() / name + ".csv"
+
+    newFile = not outPath.exists()
+    with open(outPath, 'a') as csvF:
+        writer = csv.DictWriter(csvF, fieldnames=warmStats.keys())
+
+        if newFile:
+            writer.writeheader()
+
+        writer.writerow(warmStats)
+
 if __name__ == "__main__":
     # print(benchClient.sizeFromSideLen(3, 1024*8) / (1024*1024*1024))
     # testMMOne('direct')
     # testMMChained('direct')
-    testClient('direct')
+    # testClient('direct')
+    # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
+
+    benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
+    # benchmark('largeDirect', 4, 1024*8, 'direct', 5, outPath='matmul.csv')
+
+    # benchmark('smallRemote', 4, 1024,   'process', 5, outPath='matmul.csv')
+    # benchmark('largeRemote', 4, 1024*8, 'process', 5, outPath='matmul.csv')

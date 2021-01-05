@@ -44,24 +44,24 @@ def getProf(level=1):
 # A list of all metrics that must be finalized after each invocation
 # n_* is an event count, s_* is a size metric in bytes, t_* is a time measurement in ms
 eventMetrics1 = [
-        'n_hostD$Miss',
-        'n_hostD$Hit',
-        's_hostD$Load',
-        't_hostD$Load',
-        'n_hostD$WriteBack',
-        't_hostD$WriteBack',
-        'n_devD$Hit',
-        'n_devD$Miss',
-        'n_devD$Evict',
-        't_devD$Evict',
-        's_devD$WriteBack',
+        'n_hostDMiss',
+        'n_hostDHit',
+        's_hostDLoad',
+        't_hostDLoad',
+        'n_hostDWriteBack',
+        't_hostDWriteBack',
+        'n_devDHit',
+        'n_devDMiss',
+        'n_devDEvict',
+        't_devDEvict',
+        's_devDWriteBack',
         's_htod',
         's_dtoh',
         't_htod',
         't_dtoh',
         't_zero',
-        'n_k$Miss',
-        'n_k$Hit',
+        'n_KMiss',
+        'n_KHit',
         't_kernelLoad',
         't_cudaMM'
         ]
@@ -238,7 +238,7 @@ class kernelCache():
 
     def get(self, spec):
         if spec.name not in self.kerns:
-            updateProf('n_k$Miss', 1)
+            updateProf('n_KMiss', 1)
             with ff.timer('t_kernelLoad', getProf(), final=False):
                 if spec.libPath not in self.libs:
                     self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
@@ -247,7 +247,7 @@ class kernelCache():
                 litTypes = [ l.t for l in spec.literals ]
                 self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, litTypes, nBuf)
         else:
-            updateProf('n_k$Hit', 1)
+            updateProf('n_KHit', 1)
 
         return self.kerns[spec.name]
 
@@ -321,18 +321,18 @@ class bufferCache():
 
     def _makeRoom(self, buf):
         if buf.onDevice:
-            updateProf('n_devD$Hit', 1)
+            updateProf('n_devDHit', 1)
         else:
-            updateProf('n_devD$Miss', 1)
-            with ff.timer('t_devD$Evict', getProf(), final=False):
+            updateProf('n_devDMiss', 1)
+            with ff.timer('t_devDEvict', getProf(), final=False):
                 while self.cap - self.size < buf.size:
-                    updateProf('n_devD$Evict', 1)
+                    updateProf('n_devDEvict', 1)
                     # Pull from general pool first, only touch const if you have to
                     b = self.policy.pop()
                     logging.debug("Evicting " + b.name)
 
                     if b.dirty:
-                        updateProf('s_devD$WriteBack', b.size())
+                        updateProf('s_devDWriteBack', b.size())
                         b.toHost()
 
                     b.freeDevice()
@@ -355,7 +355,7 @@ class bufferCache():
 
         if bSpec.name in self.bufs:
             logging.debug("Loading from Cache: " + bSpec.name)
-            updateProf('n_hostD$Hit', 1)
+            updateProf('n_hostDHit', 1)
             buf = self.bufs[bSpec.name]
 
             if overwrite:
@@ -365,7 +365,7 @@ class bufferCache():
             if buf.onDevice:
                 self.policy.remove(buf)
         else:
-            updateProf('n_hostD$Miss', 1)
+            updateProf('n_hostDMiss', 1)
             if bSpec.ephemeral or overwrite:
                 logging.debug("Loading (new buffer): " + bSpec.name)
                 buf = kaasBuf.fromSpec(bSpec)
@@ -373,15 +373,15 @@ class bufferCache():
                 if buf.ephemeral:
                     self.ephemerals[bSpec.name] = buf
             else:
-                raw = self.kv.get(bSpec.name)
+                with ff.timer('t_hostDLoad', getProf(), final=False):
+                    raw = self.kv.get(bSpec.name)
                 if raw is None:
                     logging.debug("Loading (new buffer): " + bSpec.name)
                     buf = kaasBuf.fromSpec(bSpec)
                 else:
                     logging.debug("Loading from KV: " + bSpec.name)
-                    updateProf('s_hostD$Load', bSpec.size)
-                    with ff.timer('t_hostD$Load', getProf(), final=False):
-                        buf = kaasBuf.fromSpec(bSpec, raw)
+                    updateProf('s_hostDLoad', bSpec.size)
+                    buf = kaasBuf.fromSpec(bSpec, raw)
 
         self._makeRoom(buf)
         buf.toDevice()
@@ -406,13 +406,13 @@ class bufferCache():
                 # Data are stored as numpy arrays because memoryviews can't be
                 # pickled. This should still be zero copy.
                 logging.debug("Writing back to kv: " + buf.name)
-                with ff.timer('t_hostD$WriteBack', getProf(), final=False):
+                with ff.timer('t_hostDWriteBack', getProf(), final=False):
                     self.kv.put(buf.name, np.asarray(buf.hbuf))
             buf.dirty = False
 
 
     def flush(self):
-        updateProf('n_hostD$WriteBack', len(self.dirtyBufs))
+        updateProf('n_hostDWriteBack', len(self.dirtyBufs))
         for b in self.dirtyBufs.values():
             self._flushOne(b)
 

@@ -569,14 +569,18 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
 
     # Cold Start
     client.invokeN(1)
-    coldStats = kaasCtx.Stats(reset=True)['WorkerStats']
+    rawStats = kaasCtx.Stats(reset=True)
+    coldStats = rawStats['WorkerStats']
+    coldStats['t_e2e'] = rawStats['LocalStats']['invoke']
     coldStats['warm'] = False 
     coldStats = {**coldStats, **configDict}
 
     # Warm Start
     client.invokeN(nrepeat)
-    warmStats = kaasCtx.Stats(reset=True)['WorkerStats']
+    rawStats = kaasCtx.Stats(reset=True)
+    warmStats = rawStats['WorkerStats']
     warmStats['warm'] = True
+    warmStats['t_e2e'] = rawStats['LocalStats']['invoke']
     warmStats = {**warmStats, **configDict}
 
     if outPath is not None:
@@ -592,6 +596,7 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
             writer.writeheader()
 
         writer.writerow(warmStats)
+        writer.writerow(coldStats)
 
 if __name__ == "__main__":
     # print(benchClient.sizeFromSideLen(3, 1024*8) / (1024*1024*1024))
@@ -600,8 +605,8 @@ if __name__ == "__main__":
     # testClient('direct')
     # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
 
-    benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
+    # benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
     # benchmark('largeDirect', 4, 1024*8, 'direct', 5, outPath='matmul.csv')
 
     # benchmark('smallRemote', 4, 1024,   'process', 5, outPath='matmul.csv')
-    # benchmark('largeRemote', 4, 1024*8, 'process', 5, outPath='matmul.csv')
+    benchmark('largeRemote', 4, 1024*8, 'process', 5, outPath='matmul.csv')

@@ -11,13 +11,12 @@ cudaLib = None
 gemmFunc = None
 
 class ChainedMults():
-    def __init__(self, name, shapes, bArrs=None, useCuda=True):
+    def __init__(self, shapes, bArrs=None, useCuda=True):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
         Shapes is a series of (N,M,K) for each layer (i.e. ncolB, nrowA, ncolA)"""
 
-        self.name = name
         self.shapes = shapes
         self.useCuda = useCuda
         
@@ -39,10 +38,6 @@ class ChainedMults():
                 prevShape = shape.c
         else:
             self.bArrs = bArrs
-
-
-    def destroy(self):
-        pass
 
 
     # We delay most initialization until the first invocation to emulate
@@ -71,7 +66,11 @@ class ChainedMults():
         cBufs = []
         dimBufs = []
         for layerShape in self.shapes:
-            cBufs.append(cuda.mem_alloc(mmShape.nbytes(layerShape.c)))
+            cNBytes = mmShape.nbytes(layerShape.c)
+            cBuf = cuda.mem_alloc(cNBytes)
+            cuda.memset_d8(cBuf, 0, cNBytes)
+
+            cBufs.append(cBuf)
             dimBufs.append(cuda.mem_alloc(4*8))
 
         cuda.memcpy_htod(inDbuf, inBuf)

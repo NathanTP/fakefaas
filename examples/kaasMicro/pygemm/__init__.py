@@ -10,5 +10,6 @@ import libff.invoke
 
 from .util import *
 
+from . import faas
 from . import kaas
 from . import local

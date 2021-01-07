@@ -273,6 +273,8 @@ class benchClient():
                 # reading time in the benchmark
                 self.getResult()
 
+            self.ffCtx.kv.delete(self.lastRetKey)
+
 
     def getStats(self, reset=False):
         return self.kaas.Stats(reset=reset)

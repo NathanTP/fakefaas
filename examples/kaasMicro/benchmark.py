@@ -26,14 +26,17 @@ def testMMChained(mode='direct'):
 
     inArr = pygemm.generateArr(shapes[0].a)
 
-    func = pygemm.kaas.ChainedMults("testchain", shapes, libffCtx, kaasHandle)
+    # func = pygemm.kaas.ChainedMults("testchain", shapes, libffCtx, kaasHandle)
+    func = pygemm.faas.ChainedMults("testchain", shapes, libffCtx, mode=mode, useCuda=True)
 
     retKey = func.invoke(inArr)
 
     testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
+    print(testOut)
 
-    baseFunc = pygemm.local.ChainedMults("baseline", shapes, bArrs=func.bArrs, useCuda=True)
+    baseFunc = pygemm.local.ChainedMults(shapes, bArrs=func.bArrs, useCuda=True)
     baseArr = baseFunc.invoke(inArr)
+    print(baseArr)
 
     func.destroy()
 
@@ -134,9 +137,15 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
     If outPath is set, the results will be appended to that CSV file instead
     of creating a new one."""
 
-    # ffCtx, kaasCtx = startKaas(mode)
-    # client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx)
-    client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=False)
+    clientType = 'faas'
+    if clientType == 'kaas':
+        ffCtx, kaasCtx = startKaas(mode)
+        client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx)
+    elif clientType == 'faas':
+        ffCtx = pygemm.getCtx(remote=(mode == 'process'))
+        client = pygemm.faas.benchClient('benchmark-'+ mode, depth, size, ffCtx, mode=mode, useCuda=True)
+    elif clientType == 'local':
+        client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=False)
 
     configDict = { 'name' : name, 'mode' : mode, 'nrepeat' : nrepeat,
             'matDim' : size, 'depth' : depth, 'nbyte' :  pygemm.sizeFromSideLen(depth, size)}
@@ -181,8 +190,8 @@ if __name__ == "__main__":
     # testClient('direct')
     # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
 
-    benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
+    # benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
     # benchmark('largeDirect', 4, 1024*8, 'direct', 5, outPath='matmul.csv')
 
-    # benchmark('smallRemote', 4, 1024,   'process', 5, outPath='matmul.csv')
+    benchmark('smallRemote', 4, 1024,   'process', 5, outPath='matmul.csv')
     # benchmark('largeRemote', 4, 1024*8, 'process', 5, outPath='matmul.csv')

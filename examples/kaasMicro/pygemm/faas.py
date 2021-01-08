@@ -8,7 +8,7 @@ from .util import *
 workerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
 
 class ChainedMults():
-    def __init__(self, name, shapes, ffCtx, mode='direct', bArrs=None, useCuda=True):
+    def __init__(self, name, shapes, ffCtx, mode='direct', bArrs=None, useCuda=True, stats=None):
         self.shapes = shapes
         self.useCuda = useCuda
         self.ffCtx = ffCtx
@@ -45,11 +45,12 @@ class ChainedMults():
             self.ownedKeys += self.bNames
 
 
-    def invoke(self, inArr, outBuf=None, times=None):
+    def invoke(self, inArr, outBuf=None, stats=None):
         cleanInput = False
         if not isinstance(inArr, str):
             inKey = self.name + "_input"
-            self.ffCtx.kv.put(self.name + "_input", inArr)
+            with ff.timer("t_write_input", stats):
+                self.ffCtx.kv.put(self.name + "_input", inArr)
             cleanInput = True
         else:
             inKey = inArr
@@ -63,7 +64,8 @@ class ChainedMults():
                 "useCuda" : self.useCuda
               }
 
-        self.remFunc.Invoke(req)
+        with ff.timer("t_client_invoke", stats):
+            self.remFunc.Invoke(req)
 
         if cleanInput:
             self.ffCtx.kv.delete(inKey)
@@ -100,8 +102,7 @@ class benchClient():
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
 
-        with ff.timer("invoke", self.stats):
-            self.lastRetKey = self.func.invoke(inArr)
+        self.lastRetKey = self.func.invoke(inArr, stats=self.stats)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
@@ -116,10 +117,11 @@ class benchClient():
         deleteInputs = False
         if not isinstance(inBufs[0], str):
             inNames = []
-            for i,b in enumerate(inBufs):
-                inName = self.name + "_input" + str(i)
-                self.ffCtx.kv.put(inName, b)
-                inNames.append(inName)
+            with ff.timer("t_write_input", self.stats):
+                for i,b in enumerate(inBufs):
+                    inName = self.name + "_input" + str(i)
+                    self.ffCtx.kv.put(inName, b)
+                    inNames.append(inName)
             inBufs = inNames
             deleteInputs = True
 
@@ -143,7 +145,9 @@ class benchClient():
 
 
     def getResult(self):
-        return getData(self.lastRetKey, shapes[-1].c)
+        with ff.timer("t_read_output", self.stats):
+            raw = getData(self.ffCtx, self.lastRetKey, self.shapes[-1].c)
+        return raw
 
 
     def destroy(self):

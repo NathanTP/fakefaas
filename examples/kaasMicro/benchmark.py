@@ -27,16 +27,15 @@ def testMMChained(mode='direct'):
     inArr = pygemm.generateArr(shapes[0].a)
 
     # func = pygemm.kaas.ChainedMults("testchain", shapes, libffCtx, kaasHandle)
-    func = pygemm.faas.ChainedMults("testchain", shapes, libffCtx, mode=mode, useCuda=True)
+    # func = pygemm.faas.ChainedMults("testchain", shapes, libffCtx, mode=mode, useCuda=True)
+    func = pygemm.local.ChainedMults("testchain", shapes, ffCtx=libffCtx, useCuda=True)
 
     retKey = func.invoke(inArr)
 
     testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
-    print(testOut)
 
-    baseFunc = pygemm.local.ChainedMults(shapes, bArrs=func.bArrs, useCuda=True)
+    baseFunc = pygemm.local.ChainedMults("testchain_baseline", shapes, bArrs=func.bArrs, useCuda=False)
     baseArr = baseFunc.invoke(inArr)
-    print(baseArr)
 
     func.destroy()
 
@@ -129,7 +128,19 @@ def startKaas(mode='direct'):
     return (libffCtx, kaasHandle)
 
 
-def benchmark(name, depth, size, mode, nrepeat, outPath=None):
+def cleanStats(rawStats, config):
+    # Have to flatten for CSV which could lead to accidental name conflicts
+    overlappingKeys = set(rawStats['WorkerStats'].keys()) & set(rawStats['LocalStats'].keys())
+    if len(overlappingKeys) != 0:
+        print("WARNING: key conflict between client and worker stats:")
+        print(overlappingKeys)
+
+    stats = {**rawStats['WorkerStats'], **rawStats['LocalStats']}
+    stats = {**stats, **config}
+
+    return stats
+
+def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
     """Run a benchmark, outputing a CSV named ${name}.csv with the name column
     set to name.  The benchmark will be run with the depth,size,mode and
     repeated nrpeat times + 1 (cold start + nrepeat warm starts).
@@ -137,7 +148,6 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
     If outPath is set, the results will be appended to that CSV file instead
     of creating a new one."""
 
-    clientType = 'faas'
     if clientType == 'kaas':
         ffCtx, kaasCtx = startKaas(mode)
         client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx)
@@ -147,26 +157,18 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
     elif clientType == 'local':
         client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=False)
 
-    configDict = { 'name' : name, 'mode' : mode, 'nrepeat' : nrepeat,
-            'matDim' : size, 'depth' : depth, 'nbyte' :  pygemm.sizeFromSideLen(depth, size)}
+    configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat,
+            'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size)}
 
     # Cold Start
     client.invokeN(1)
-    # rawStats = kaasCtx.Stats(reset=True)
-    rawStats = client.getStats(reset=True)
-    coldStats = rawStats['WorkerStats']
-    coldStats['t_e2e'] = rawStats['LocalStats']['invoke']
-    coldStats['warm'] = False 
-    coldStats = {**coldStats, **configDict}
+    coldStats = cleanStats(client.getStats(reset=True), configDict)
+    coldStats['warm'] = False
 
     # Warm Start
-    client.invokeN(nrepeat)
-    # rawStats = kaasCtx.Stats(reset=True)
-    rawStats = client.getStats(reset=True)
-    warmStats = rawStats['WorkerStats']
+    client.invokeN(nrepeat, fetchResult=True)
+    warmStats = cleanStats(client.getStats(reset=True), configDict)
     warmStats['warm'] = True
-    warmStats['t_e2e'] = rawStats['LocalStats']['invoke']
-    warmStats = {**warmStats, **configDict}
 
     if outPath is not None:
         outPath = pathlib.Path('.').resolve() / outPath
@@ -186,12 +188,12 @@ def benchmark(name, depth, size, mode, nrepeat, outPath=None):
 if __name__ == "__main__":
     # print(benchClient.sizeFromSideLen(3, 1024*8) / (1024*1024*1024))
     # testMMOne('direct')
-    # testMMChained('direct')
+    testMMChained('direct')
     # testClient('direct')
     # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
 
-    # benchmark('smallDirect', 4, 1024,   'direct', 5, outPath='matmul.csv')
+    # benchmark('smallDirect', 4, 1024,   'direct', 5, "local", outPath='matmul.csv')
     # benchmark('largeDirect', 4, 1024*8, 'direct', 5, outPath='matmul.csv')
 
-    benchmark('smallRemote', 4, 1024,   'process', 5, outPath='matmul.csv')
-    # benchmark('largeRemote', 4, 1024*8, 'process', 5, outPath='matmul.csv')
+    # benchmark('smallRemote', 4, 1024,   'process', 5, "faas", outPath='matmul.csv')
+    # benchmark('largeRemote', 4, 1024*8, 'process', 5, "kaas", outPath='matmul.csv')

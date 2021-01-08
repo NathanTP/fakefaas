@@ -77,7 +77,7 @@ class DirectRemoteFunc(RemoteFunc):
         self.ctx = context
         self.profs = util.profCollection() 
 
-        with util.timer("init", self.profs):
+        with util.timer("t_libff_init", self.profs):
             if packagePath in _importedFuncPackages:
                 self.funcs = _importedFuncPackages[packagePath]
             else:
@@ -96,7 +96,7 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Invoke(self, arg):
-        with util.timer('invoke', self.profs):
+        with util.timer('t_libff_invoke', self.profs):
             return self.funcs[self.fName](arg, self.ctx)
 
 
@@ -127,7 +127,7 @@ class ProcessRemoteFunc(RemoteFunc):
         # to capture this in invoke by adding a 'ready' signal from the process
         # that we wait for before invoking (right now stdin just buffers the
         # input while the process starts up).
-        with util.timer('init', self.profs):
+        with util.timer('t_libff_init', self.profs):
             if context.array is not None:
                 arrayMnt = context.array.FileMount
             else:
@@ -168,14 +168,14 @@ class ProcessRemoteFunc(RemoteFunc):
         #     out, err = self.proc.communicate()
         #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
 
-        with util.timer('requestEncode', self.profs):
+        with util.timer('t_requestEncode', self.profs):
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
 
-        with util.timer('invoke', self.profs):
+        with util.timer('t_libff_invoke', self.profs):
             rawResp = self.proc.stdout.readline()
 
-        with util.timer('responseDecode', self.profs):
+        with util.timer('t_responseDecode', self.profs):
             try:
                 resp = json.loads(rawResp)
             except:

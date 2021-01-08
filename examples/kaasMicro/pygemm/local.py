@@ -11,14 +11,19 @@ cudaLib = None
 gemmFunc = None
 
 class ChainedMults():
-    def __init__(self, shapes, bArrs=None, useCuda=True):
+    def __init__(self, name, shapes, ffCtx=None, bArrs=None, useCuda=True):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
-        Shapes is a series of (N,M,K) for each layer (i.e. ncolB, nrowA, ncolA)"""
+        Shapes is a series of (N,M,K) for each layer (i.e. ncolB, nrowA, ncolA)
+        
+        ffCtx will be used to store the final output if it is provided. Name
+        will be used to prefix keys."""
 
         self.shapes = shapes
         self.useCuda = useCuda
+        self.name = name
+        self.ffCtx = ffCtx
         
         # devBarrs is cuda pointers and will be allocated on the first invocation
         self.devBarrs = None
@@ -42,7 +47,7 @@ class ChainedMults():
 
     # We delay most initialization until the first invocation to emulate
     # cold-start behavior of something like faas or kaas.
-    def _checkInitialized(self, times):
+    def _checkInitialized(self):
         if self.useCuda:
             global cudaLib, gemmFunc
             if cudaLib is None:
@@ -58,8 +63,8 @@ class ChainedMults():
                     self.devBarrs.append(darr)
 
 
-    def _invokeCuda(self, inBuf, outBuf=None, times=None):
-        self._checkInitialized(times)
+    def _invokeCuda(self, inBuf, outBuf=None):
+        self._checkInitialized()
 
         inDbuf = cuda.mem_alloc(inBuf.nbytes)
 
@@ -102,7 +107,7 @@ class ChainedMults():
         return hostC
 
 
-    def _invokeNP(self, inBuf, outBuf=None, times=None):
+    def _invokeNP(self, inBuf, outBuf=None):
         aArr = inBuf
         for bArr in self.bArrs:
             c = np.matmul(aArr, bArr)
@@ -111,21 +116,27 @@ class ChainedMults():
         return aArr
 
 
-    def invoke(self, inBuf, outBuf=None, times=None):
-        if self.useCuda:
-            return self._invokeCuda(inBuf, outBuf, times)
+    def invoke(self, inBuf, outBuf=None, stats=None):
+        with ff.timer("t_client_invoke", stats): 
+            if self.useCuda:
+                res = self._invokeCuda(inBuf, outBuf)
+            else:
+                res = self._invokeNP(inBuf, outBuf)
+        if self.ffCtx is not None:
+            self.ffCtx.kv.put(self.name+"_out", res)
+            return self.name+"_out"
         else:
-            return self._invokeNP(inBuf, outBuf, times)
+            return res
 
 
     def destroy(self):
         if self.devBarrs is not None:
             for arr in self.devBarrs:
-                cuda.mem_free(arr)
+                arr.free()
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, rng=None, useCuda=True):
+    def __init__(self, name, depth, sideLen, ffCtx=None, rng=None, useCuda=True):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -146,6 +157,12 @@ class benchClient():
         """
         self.rng = rng
         self.name = name
+
+        # We only use this for the bare-minimum externally-visible stuff.
+        # Basically just the input and output arrays. Users would typically use
+        # the local memory kv anyway.
+        self.ffCtx = ffCtx
+
         self.stats = ff.profCollection()
 
         self.nbytes = sizeFromSideLen(depth, sideLen)
@@ -156,7 +173,7 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, useCuda=useCuda)
+        self.func = ChainedMults(name, self.shapes, ffCtx=ffCtx, useCuda=useCuda)
 
 
     def invoke(self, inArr):
@@ -164,10 +181,9 @@ class benchClient():
         store. If this object was created with an rng, invokeDelayed will wait
         a random amount of time before invoking. You can get the output of the
         last invocation with benchClient.getResult()."""
-        with ff.timer("invoke", self.stats):
-            if self.rng is not None:
-                time.sleep(self.rng() / 1000)
-            self.lastRet = self.func.invoke(inArr)
+        if self.rng is not None:
+            time.sleep(self.rng() / 1000)
+        self.lastRet = self.func.invoke(inArr, self.stats)
 
         return self.lastRet
 
@@ -197,6 +213,8 @@ class benchClient():
 
 
     def getStats(self, reset=False):
+        local = self.stats.report()
+        local['t_write_input'] = 0
         return {
                 "LocalStats" : self.stats.report(),
                 "WorkerStats" : {}
@@ -207,7 +225,12 @@ class benchClient():
         if self.lastRet is None:
             raise RuntimeError("Must invoke benchClient at least once to get a result")
 
-        return self.lastRet        
+        with ff.timer("t_read_output", self.stats):
+            if isinstance(self.lastRet, str):
+                res = getData(self.ffCtx, self.lastRet, self.shapes[-1].c)
+            else:
+                res = self.lastRet
+        return ret     
 
 
     def destroy(self):

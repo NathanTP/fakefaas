@@ -99,7 +99,7 @@ class mmFunc():
         kern = self.getKernFunc(aData, bData, cData)
 
         req = kaasServer.kaasReq([ kern ])
-        with libff.timer("invoke", times):
+        with libff.timer("t_client_invoke", times):
             self.kHandle.Invoke(req.toDict())
 
         return kern.outputs[0].name 
@@ -158,10 +158,11 @@ class ChainedMults():
             f.destroy()
 
 
-    def invoke(self, inBuf, outBuf=None, times=None):
+    def invoke(self, inBuf, outBuf=None, stats=None):
         generatedInput = False
         if isinstance(inBuf, np.ndarray):
-            self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
+            with ff.timer("t_write_input", stats):
+                self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
             inBuf = kaasServer.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
             generatedInput = True
 
@@ -180,8 +181,7 @@ class ChainedMults():
             nextIn = cBuf
 
         req = kaasServer.kaasReq(kerns)
-        with libff.timer("invoke", times):
-            self.kHandle.Invoke(req.toDict())
+        self.kHandle.Invoke(req.toDict())
 
         if generatedInput:
             self.ffCtx.kv.delete(inBuf.name)
@@ -220,6 +220,7 @@ class benchClient():
         self.rng = rng
         self.name = name
         self.generatedBufs = []
+        self.stats = ff.profCollection()
 
         # Used to name any generated arrays
         self.nextArrayID = 0
@@ -242,11 +243,11 @@ class benchClient():
         last invocation with benchClient.getResult()."""
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
-        self.lastRetKey = self.func.invoke(inArr)
+        self.lastRetKey = self.func.invoke(inArr, stats=self.stats)
         return self.lastRetKey
 
 
-    def invokeN(self, n, inArrs=1, fetchResult=False):
+    def invokeN(self, n, inArrs=1, fetchResult=False, stats=None):
         """Invoke the client n times, waiting self.rng() ms inbetween
         invocations. inArrs may be a list of arrays (either a numpy.ndarray or
         kaas.bufferSpec) to use as inputs, if len(inArrs) < n, the inputs will
@@ -262,9 +263,11 @@ class benchClient():
             inBufs = []
             for i in range(inArrs):
                 arr = generateArr(self.shapes[0].a)
-                inBufs.append(self._bufArgToBuf(arr))
+                with ff.timer("t_write_input", self.stats):
+                    inBufs.append(self._bufArgToBuf(arr))
         else:
-            inBufs = [ self._bufArgToBuf(arr) for arr in inArrs ]
+            with ff.timer("t_write_input", self.stats):
+                inBufs = [ self._bufArgToBuf(arr) for arr in inArrs ]
 
         for i in range(n):
             self.invoke(inBufs[ i % len(inBufs) ])
@@ -273,18 +276,22 @@ class benchClient():
                 # reading time in the benchmark
                 self.getResult()
 
-            self.ffCtx.kv.delete(self.lastRetKey)
+            self.ff.kv.delete(self.lastRetKey)
 
 
     def getStats(self, reset=False):
-        return self.kaas.Stats(reset=reset)
+        allStats = self.kaas.Stats(reset=reset)
+        allStats['LocalStats'] = {**allStats['LocalStats'], **self.stats.report()}
+        return allStats 
 
 
     def getResult(self):
         if self.lastRetKey is None:
             raise RuntimeError("Must invoke benchClient at least once to get a result")
 
-        return getData(self.ff, self.lastRetKey, self.shapes[-1].c)       
+        with ff.timer("t_read_output", self.stats):
+            res = getData(self.ff, self.lastRetKey, self.shapes[-1].c)       
+        return res
         
 
     def destroy(self):

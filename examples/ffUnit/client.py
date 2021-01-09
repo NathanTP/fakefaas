@@ -51,7 +51,8 @@ def stats():
 
 def testAsync():
     ctx = libff.invoke.RemoteCtx(None, None)
-    func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx)
+    # func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx)
+    func = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx)
 
     start = time.time()
     fut0 = func.InvokeAsync({"runtime" : 1})
@@ -60,6 +61,7 @@ def testAsync():
 
     start = time.time()
     resp1 = fut1.get()
+    resp2 = func.Invoke({"runtime" : 1})
     resp0 = fut0.get()
     funcRuntime = time.time() - start
 
@@ -71,18 +73,20 @@ def testAsync():
         print("Async FAIL: Future returned too soon")
         return False
 
-    if resp0['validateMetric'] == resp1['validateMetric']:
-        print("Async FAIL: futures returned the same response")
+    respVals = [resp0['validateMetric'], resp1['validateMetric'], resp2['validateMetric']]
+    if len(set(respVals)) != len(respVals):
+        print("Async FAIL: some futures returned the same response")
+        print(respVals)
         return False
 
     print("Async: PASS")
     return True
 
 if __name__ == "__main__":
-    # if not stats():
-    #     sys.exit(1)
+    if not stats():
+        sys.exit(1)
 
     # helloWorld()
 
-    if not testAsync():
-        sys.exit(1)
+    # if not testAsync():
+    #     sys.exit(1)

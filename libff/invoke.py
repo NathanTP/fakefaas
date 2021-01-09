@@ -61,6 +61,16 @@ class RemoteCtx():
 # function, but the heavy state is memoized here.
 _importedFuncPackages = {}
 
+# For now we just do delayed execution instead of asynchronous because I don't
+# want to deal with multiprocessing or dask or something.
+class DirectRemoteFuncFuture():
+    def __init__(self, arg, func):
+        self.arg = arg
+
+    def get():
+        return self.func.Invoke(self.arg)
+
+
 class DirectRemoteFunc(RemoteFunc):
     """Invokes the function directly in the callers process. This will import
     the function's package.
@@ -93,6 +103,11 @@ class DirectRemoteFunc(RemoteFunc):
                 spec.loader.exec_module(package)
                 self.funcs = package.LibffInvokeRegister()
                 _importedFuncPackages[packagePath] = self.funcs 
+
+
+    # Not actually async, just delays execution until you ask for it
+    def InvokeAsync(self, arg):
+        return DirectRemoteFuncFuture(arg, self)
 
 
     def Invoke(self, arg):
@@ -216,34 +231,8 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def Invoke(self, arg):
-        req = { "command" : "invoke",
-                "stats" : self.ctx.profs,
-                "fName" : self.fname,
-                "fArg" : arg }
-
-        # For some reason this masks some errors (e.g. failed Redis connection). I can't figure out why.
-        # if self.proc.poll() is None:
-        #     out, err = self.proc.communicate()
-        #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
-
-        with util.timer('t_requestEncode', self.profs):
-            self.proc.stdin.write(json.dumps(req) + "\n")
-            self.proc.stdin.flush()
-
-        with util.timer('t_libff_invoke', self.profs):
-            rawResp = self.proc.stdout.readline()
-
-        with util.timer('t_responseDecode', self.profs):
-            try:
-                resp = json.loads(rawResp)
-            except:
-                raise InvocationError(rawResp)
-        
-        if resp['error'] is not None:
-            raise InvocationError(resp['error'])
-
-        self.ctx.profs = resp['stats']
-        return resp['resp']
+        fut = self.InvokeAsync(arg)
+        return fut.get()
 
 
     def Stats(self, reset=False):

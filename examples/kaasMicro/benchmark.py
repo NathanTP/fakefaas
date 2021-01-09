@@ -4,6 +4,11 @@ from pprint import pprint
 import time
 import numpy as np
 import csv
+import argparse
+import subprocess as sp
+
+# Just to get its exception type
+import redis
 
 import libff as ff
 import libff.kv
@@ -155,10 +160,11 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
         ffCtx = pygemm.getCtx(remote=(mode == 'process'))
         client = pygemm.faas.benchClient('benchmark-'+ mode, depth, size, ffCtx, mode=mode, useCuda=True)
     elif clientType == 'local':
-        client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=False)
+        client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=True)
 
     configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat,
-            'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size)}
+            'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size),
+            'client' : clientType}
 
     # Cold Start
     client.invokeN(1)
@@ -185,15 +191,49 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
         writer.writerow(warmStats)
         writer.writerow(coldStats)
 
+
 if __name__ == "__main__":
-    # print(benchClient.sizeFromSideLen(3, 1024*8) / (1024*1024*1024))
     # testMMOne('direct')
-    testMMChained('direct')
+    # testMMChained('direct')
     # testClient('direct')
     # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
+    # sys.exit()
 
-    # benchmark('smallDirect', 4, 1024,   'direct', 5, "local", outPath='matmul.csv')
-    # benchmark('largeDirect', 4, 1024*8, 'direct', 5, outPath='matmul.csv')
+    #=================================================================================
+    # Results are only valid if you run one benchmark. Running multiple
+    # benchmarks in the same process may skew results, you probably also want
+    # to restart redis for the process mode.
+    #=================================================================================
 
-    # benchmark('smallRemote', 4, 1024,   'process', 5, "faas", outPath='matmul.csv')
-    # benchmark('largeRemote', 4, 1024*8, 'process', 5, "kaas", outPath='matmul.csv')
+    parser = argparse.ArgumentParser(description="Benchmark the gemm kernel")
+    parser.add_argument("-w", "--worker", type=str, default='local', choices=['local', 'kaas', 'faas'],
+            help="Which backend worker to use.")
+    parser.add_argument("-s", "--size", type=str, default='small', choices=['small', 'large'],
+            help="Which experiment size to use.")
+    parser.add_argument("-m", "--mode", type=str, default='direct', choices=['direct', 'process'],
+            help="Which libff mode to use")
+    parser.add_argument("-n", "--niter", type=int, default=5, help="Number of experiment iterations to run for the warm results")
+
+    args = parser.parse_args()
+
+    if args.size == 'small': 
+        size = 1024
+    else:
+        size = 1024*8
+
+    # Each worker may collect different statistics and therefor must use a different CSV output
+    outPath = args.worker+".csv"
+
+    if args.mode == 'process':
+        redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
+
+    try:
+        benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter, args.worker, outPath=outPath)
+    except redis.exceptions.ConnectionError as e:
+        print("Redis error:")
+        print(e)
+        redisProc.terminate()
+        print(redisProc.stdout.read())
+
+    if args.mode == 'process':
+        redisProc.terminate()

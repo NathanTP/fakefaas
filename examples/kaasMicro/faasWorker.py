@@ -22,7 +22,7 @@ def handler(req, ctx):
         for bKey, shape in zip(req['bArrs'], shapes):
             bArrs.append(pygemm.getData(ctx, bKey, shape.b)) 
 
-        gemmFunc = pygemm.local.ChainedMults(shapes, bArrs, req['useCuda'])
+        gemmFunc = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'])
 
     inArr = pygemm.getData(ctx, req['input'], shapes[0].a)
 

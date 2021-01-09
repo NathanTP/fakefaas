@@ -116,10 +116,25 @@ class DirectRemoteFunc(RemoteFunc):
         return {}
 
 
+class ProcessRemoteFuncFuture():
+    def __init__(self, reqID, func):
+        self.reqID = reqID
+        self.func = func
+
+    def get(self):
+        return self.func._awaitResp(self.reqID)
+
+
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context):
         self.profs = util.profCollection() 
+
+        # ID of the next request to make and the last completed request (respectively)
+        self.nextID = 0 
+        self.lastCompleted = -1
+        # Maps completed request IDs to their responses, responses are removed once _awaitResp is called
+        self.completedReqs = {}
 
         # Unfortunately, this doesn't measure the full init time because it is
         # asynchronous. Creating a ProcessRemoteFunc starts the process but
@@ -156,6 +171,49 @@ class ProcessRemoteFunc(RemoteFunc):
         self.fname = funcName
         self.packagePath = packagePath
         self.ctx = context
+
+
+    def InvokeAsync(self, arg):
+        req = { "command" : "invoke",
+                "stats" : util.profCollection(),
+                "fName" : self.fname,
+                "fArg" : arg }
+
+        # For some reason this masks some errors (e.g. failed Redis connection). I can't figure out why.
+        # if self.proc.poll() is None:
+        #     out, err = self.proc.communicate()
+        #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
+
+        with util.timer('t_requestEncode', self.profs):
+            self.proc.stdin.write(json.dumps(req) + "\n")
+            self.proc.stdin.flush()
+
+        fut = ProcessRemoteFuncFuture(self.nextID, self)
+        self.nextID += 1
+        return fut
+
+
+    def _awaitResp(self, reqID):
+        """Wait until request 'reqID' has been processed and return its response"""
+        while self.lastCompleted < reqID:
+            self.lastCompleted += 1
+            self.completedReqs[self.lastCompleted] = self.proc.stdout.readline()
+
+        # Decoding is deferred until future await to make errors more clear
+        rawResp = self.completedReqs.pop(reqID)
+        with util.timer('t_responseDecode', self.profs):
+            try:
+                resp = json.loads(rawResp)
+            except:
+                raise InvocationError(rawResp)
+        
+        if resp['error'] is not None:
+            raise InvocationError(resp['error'])
+
+
+        self.ctx.profs.merge(resp['stats'])
+        return resp['resp']
+
 
     def Invoke(self, arg):
         req = { "command" : "invoke",

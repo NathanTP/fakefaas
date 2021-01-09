@@ -68,10 +68,10 @@ class profCollection(collections.abc.MutableMapping):
     def __str__(self):
         return json.dumps(self.report(), indent=4)
 
-    def merge(self, new, prefix):
+    def merge(self, new, prefix=''):
         for k,v in new.items():
             newKey = prefix+k
-            if newKey in orig:
+            if newKey in self.profs:
                 self.profs[newKey].increment(v.total)
             else:
                 self.profs[newKey] = v

@@ -19,7 +19,8 @@ def perfSim(req, ctx):
     randomMetric = random.randint(0,100)
     ctx.profs['randSample'].increment(randomMetric)
 
-    return {}
+    # returns the random metric to aid in testing
+    return {"validateMetric" : randomMetric}
 
 
 funcMap = {"echo" : echo, "perfSim" : perfSim}

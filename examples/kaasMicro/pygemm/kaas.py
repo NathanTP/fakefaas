@@ -180,8 +180,9 @@ class ChainedMults():
             kerns.append(f.getKernFunc(aData = nextIn, cData = cBuf))
             nextIn = cBuf
 
-        req = kaasServer.kaasReq(kerns)
-        self.kHandle.Invoke(req.toDict())
+        with ff.timer("t_client_invoke", stats):
+            req = kaasServer.kaasReq(kerns)
+            self.kHandle.Invoke(req.toDict())
 
         if generatedInput:
             self.ffCtx.kv.delete(inBuf.name)

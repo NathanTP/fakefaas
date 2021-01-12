@@ -193,12 +193,6 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
 
 
 if __name__ == "__main__":
-    # testMMOne('direct')
-    # testMMChained('direct')
-    # testClient('direct')
-    # benchmark('testingBench', 1, 128, 'direct', 2, outPath='test.csv')
-    # sys.exit()
-
     #=================================================================================
     # Results are only valid if you run one benchmark. Running multiple
     # benchmarks in the same process may skew results, you probably also want

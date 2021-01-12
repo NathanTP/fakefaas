@@ -39,7 +39,13 @@ class kv(abc.ABC):
         pass
 
 
-class Redis:
+    @abc.abstractmethod
+    def destroy(self):
+        """Remove any state associated with this kv store"""
+        pass
+
+
+class Redis(kv):
     """A thin wrapper over a subset of redis functionality. Redis is assumed to
        be running locally on the default port."""
 
@@ -79,7 +85,11 @@ class Redis:
             ret = self.handle.delete(*keys)
 
 
-class Local:
+    def destroy(self):
+        self.handle.client_kill_filter(_id=self.handle.client_id())
+
+
+class Local(kv):
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is
     made, be careful not to re-use the reference."""
     
@@ -128,3 +138,7 @@ class Local:
                     del self.store[k]
                 except KeyError:
                     pass
+
+
+    def destroy(self):
+        pass

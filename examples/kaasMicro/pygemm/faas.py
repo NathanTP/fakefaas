@@ -76,6 +76,7 @@ class ChainedMults():
     def destroy(self):
         for key in self.ownedKeys:
             self.ffCtx.kv.delete(key)
+        self.remFunc.Close()
 
 
 class benchClient():
@@ -138,10 +139,11 @@ class benchClient():
 
 
     def getStats(self, reset=False):
-        return {
-                "LocalStats" : self.stats.report(),
-                "WorkerStats" : {}
-        }
+        funcStats = self.func.remFunc.Stats()
+        clientStats = self.stats.report()
+
+        funcStats['LocalStats'] = {**funcStats['LocalStats'], **clientStats}
+        return funcStats
 
 
     def getResult(self):

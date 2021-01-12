@@ -42,7 +42,7 @@ class RemoteFunc(abc.ABC):
 
     @abc.abstractmethod
     def Close(self):
-        """Clean up the function executor and report any accumulated statistics"""
+        """Clean up the function executor"""
         pass
 
 
@@ -127,8 +127,7 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Close(self):
-        # No stats for direct invocation yet
-        return {}
+        pass
 
 
 class ProcessRemoteFuncFuture():
@@ -231,8 +230,10 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def Invoke(self, arg):
-        fut = self.InvokeAsync(arg)
-        return fut.get()
+        with util.timer('t_libff_invoke', self.profs):
+            fut = self.InvokeAsync(arg)
+            resp = fut.get()
+        return resp 
 
 
     def Stats(self, reset=False):
@@ -247,14 +248,9 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def Close(self):
-        req = { "command" : "reportStats" }
-        resp = self.Invoke(req)
-
         del _runningFuncProcesses[self.packagePath]
         self.proc.stdin.close()
         self.proc.wait()
-
-        return { name : prof(fromDict=profile) for name, profile in resp['times'].items() }
 
 
 def _remoteServerRespond(msg):
@@ -290,7 +286,6 @@ def RemoteProcessServer(funcs, serverArgs):
             err = "Failed to parse command (must be valid JSON): " + str(e)
             _remoteServerRespond({ "error" : err })
             continue
-
 
         try:
             if req['command'] == 'invoke':

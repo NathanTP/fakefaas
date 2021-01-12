@@ -120,7 +120,6 @@ class ChainedMults():
             for layerShape in self.shapes:
                 cNBytes = mmShape.nbytes(layerShape.c)
                 cBuf = cuda.mem_alloc(cNBytes)
-                cuda.memset_d8(cBuf, 0, cNBytes)
 
                 cBufs.append(cBuf)
                 dimBufs.append(cuda.mem_alloc(4*8))
@@ -128,7 +127,7 @@ class ChainedMults():
         # this is factored out of the allocation loop to make profiling cleaner
         with ff.timer("t_zero", checkLevel(self.workerStats, 1), final=False):
             for cBuf, shape in zip(cBufs, self.shapes):
-                cuda.memset_d8(cBuf, 0, mmShape.nbytes(layerShape.c))
+                cuda.memset_d8(cBuf, 0, mmShape.nbytes(shape.c))
 
         updateProf(self.workerStats, 's_htod', inBuf.nbytes, 1)
         with ff.timer("t_htod", checkLevel(self.workerStats, 1), final=False):
@@ -257,7 +256,7 @@ class benchClient():
         last invocation with benchClient.getResult()."""
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
-        self.lastRet = self.func.invoke(inArr, self.stats)
+        self.lastRet = self.func.invoke(inArr, stats=self.stats)
 
         return self.lastRet
 
@@ -290,7 +289,7 @@ class benchClient():
         local = self.stats.report()
         local['t_write_input'] = 0
         return {
-                "LocalStats" : self.stats.report(),
+                "LocalStats" : local,
                 "WorkerStats" : self.func.workerStats.report()
         }
 

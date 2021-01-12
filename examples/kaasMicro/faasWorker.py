@@ -14,6 +14,10 @@ def handler(req, ctx):
         - 'output' : key to use when writing output
         - 'useCuda' : Boolean requesting GPU acceleration
     """
+    # print("INVOKING", file=sys.stderr)
+    # print(type(req), file=sys.stderr)
+    # print(req, file=sys.stderr)
+    # print("\n\n", file=sys.stderr)
     shapes = [ pygemm.mmShape(s[0], s[1], s[2]) for s in req['shapes'] ]
 
     global gemmFunc

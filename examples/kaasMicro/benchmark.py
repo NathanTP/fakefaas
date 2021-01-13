@@ -20,107 +20,6 @@ import kaasServer
 import pygemm
 import pygemm.kaas
 
-def testMMChained(mode='direct'):
-    libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx)
-
-    shapes = [
-            pygemm.mmShape(128,128,128),
-            pygemm.mmShape(128,256,128),
-            pygemm.mmShape(128,512,256) ]
-
-    inArr = pygemm.generateArr(shapes[0].a)
-
-    # func = pygemm.kaas.ChainedMults("testchain", shapes, libffCtx, kaasHandle)
-    # func = pygemm.faas.ChainedMults("testchain", shapes, libffCtx, mode=mode, useCuda=True)
-    func = pygemm.local.ChainedMults("testchain", shapes, ffCtx=libffCtx, useCuda=True)
-
-    retKey = func.invoke(inArr)
-
-    testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
-
-    baseFunc = pygemm.local.ChainedMults("testchain_baseline", shapes, bArrs=func.bArrs, useCuda=False)
-    baseArr = baseFunc.invoke(inArr)
-
-    func.destroy()
-
-    diff = testOut - baseArr
-    dist = np.linalg.norm(diff)
-
-    if dist > 10:
-        print("FAIL")
-        print("Distance: " + str(dist))
-    else:
-        print("PASS")
-
-
-def testMMOne(mode='direct'):
-    libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx)
-
-    # arrA = generateArr((32,32))
-    # arrB = generateArr((32,32))
-    arrA = pygemm.generateArr((1024,256))
-    arrB = pygemm.generateArr((256,512))
-    libffCtx.kv.put("test_a", arrA)
-    libffCtx.kv.put("test_b", arrB)
-
-    shape = [arrA.shape, arrB.shape]
-    func = pygemm.kaas.mmFunc('test', shape, libffCtx, kaasHandle)
-
-    rKey = func.invoke()
-    
-    arrC = pygemm.getData(libffCtx, rKey, func.cShape)
-
-    libffCtx.kv.delete('test_a')
-    libffCtx.kv.delete('test_b')
-    libffCtx.kv.delete('test_c')
-    func.destroy()
-
-    arrC = arrC.round(4)
-    npC = np.matmul(arrA, arrB).round(4)
-
-    # Single precision accumulates errors really fast so the differences can be
-    # big. The euclidean distance seems to get us close enough for a pretty
-    # good guess at correctness
-    diff = arrC - npC
-    dist = np.linalg.norm(diff)
-    if dist > 1:
-        print("FAIL:")
-        print("Euclidean Dist: " + str(dist))
-    else:
-        print("PASS")
-
-
-def testClient(mode='direct'):
-    libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx)
-    # clientPlain = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle)
-    clientPlain = pygemm.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle)
-    clientPlain.invokeN(1)
-    clientPlain.destroy()
-    
-    print("Stats: ")
-    s = kaasHandle.Stats()
-
-    timeMetricsTotal = 0
-    for k,v in s['WorkerStats'].items():
-        if k[:2] == 't_':
-            timeMetricsTotal += v
-    print("Total Time: ", s['LocalStats']['invoke'])
-    print("Time Metrics Total: ", timeMetricsTotal)
-    print("Missing Time: ", s['LocalStats']['invoke'] - timeMetricsTotal)
-    pprint(s)
-
-    # clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
-    # clientPoisson.invokeN(5, inArrs=5)
-    # clientPoisson.destroy()
-    #
-    # clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
-    # clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
-    # clientZipf.destroy()
-
-
 def startKaas(mode='direct'):
     """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
     libffCtx = pygemm.getCtx(remote=(mode == 'process'))
@@ -145,7 +44,12 @@ def cleanStats(rawStats, config):
 
     return stats
 
-def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
+# def benchmarkWithPreprocess(name, depth, size, mode, nrepeat, clientType, outPath=None):
+#     """Run a host-based preprocessing phase before running the kernel(s) to
+#     simulate a decoupled application"""
+#     pass
+#
+def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None, outPath=None):
     """Run a benchmark, outputing a CSV named ${name}.csv with the name column
     set to name.  The benchmark will be run with the depth,size,mode and
     repeated nrpeat times + 1 (cold start + nrepeat warm starts).
@@ -155,12 +59,15 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, outPath=None):
 
     if clientType == 'kaas':
         ffCtx, kaasCtx = startKaas(mode)
-        client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx)
+        client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx,
+                preprocessTime=preprocessTime)
     elif clientType == 'faas':
         ffCtx = pygemm.getCtx(remote=(mode == 'process'))
-        client = pygemm.faas.benchClient('benchmark-'+ mode, depth, size, ffCtx, mode=mode, useCuda=True)
+        client = pygemm.faas.benchClient('benchmark-'+ mode, depth, size, ffCtx,
+                preprocessTime=preprocessTime, mode=mode, useCuda=True)
     elif clientType == 'local':
-        client = pygemm.local.benchClient('benchmark-'+ mode, depth, size, useCuda=True)
+        client = pygemm.local.benchClient('benchmark-'+ mode, depth, size,
+                preprocessTime=preprocessTime, useCuda=True)
 
     configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat,
             'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size),
@@ -207,6 +114,8 @@ if __name__ == "__main__":
     parser.add_argument("-m", "--mode", type=str, default='direct', choices=['direct', 'process'],
             help="Which libff mode to use")
     parser.add_argument("-n", "--niter", type=int, default=5, help="Number of experiment iterations to run for the warm results")
+    parser.add_argument("-p", "--preprocess", type=int, default=None,
+            help="Number of ms of preprocessing time to simulate. If not specified, no preprocessing will be simulated.")
 
     args = parser.parse_args()
 
@@ -222,7 +131,9 @@ if __name__ == "__main__":
         redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
 
     try:
-        benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter, args.worker, outPath=outPath)
+        benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter,
+                args.worker, outPath=outPath,
+                preprocessTime=args.preprocess)
     except redis.exceptions.ConnectionError as e:
         print("Redis error:")
         print(e)

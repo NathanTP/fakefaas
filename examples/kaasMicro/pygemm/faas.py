@@ -8,11 +8,12 @@ from .util import *
 workerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
 
 class ChainedMults():
-    def __init__(self, name, shapes, ffCtx, mode='direct', bArrs=None, useCuda=True, stats=None):
+    def __init__(self, name, shapes, ffCtx, mode='direct', preprocessTime=None, bArrs=None, useCuda=True, stats=None):
         self.shapes = shapes
         self.useCuda = useCuda
         self.ffCtx = ffCtx
         self.name = name
+        self.preprocessTime = preprocessTime
 
         # List of keys we are responsible for destroying
         self.ownedKeys = []
@@ -64,6 +65,9 @@ class ChainedMults():
                 "useCuda" : self.useCuda
               }
 
+        if self.preprocessTime is not None:
+            req['preprocess'] = self.preprocessTime
+
         with ff.timer("t_client_invoke", stats):
             self.remFunc.Invoke(req)
 
@@ -80,12 +84,17 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, mode='direct', rng=None, useCuda=True):
+    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, mode='direct', rng=None, useCuda=True):
+        """A general driver for the sgemm benchmark.
+            - preprocessTime: amount of time to spend preprocessing on a
+              host-only function, None skips the preprocess step entirely.
+        """
         self.name = name
         self.rng = rng
         self.nbytes = sizeFromSideLen(depth, sideLen)
         self.stats = ff.profCollection()
         self.ffCtx = ffCtx
+        self.preTime = preprocessTime
 
         # Keys that we are responsible for deleting
         self.ownedKeys = []
@@ -96,14 +105,34 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda)
+        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, preprocessTime=self.preTime)
+
+        if self.preTime is not None:
+            if mode == 'direct':
+                self.preFunc = ff.invoke.DirectRemoteFunc(workerPath, 'preprocess', self.ffCtx)
+            else:
+                self.preFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'preprocess', self.ffCtx)
 
 
     def invoke(self, inArr):
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
 
-        self.lastRetKey = self.func.invoke(inArr, stats=self.stats)
+        cleanInput = False
+        if not isinstance(inArr, str):
+            inKey = self.name + "_input"
+            with ff.timer("t_write_input", self.stats):
+                self.ffCtx.kv.put(self.name + "_input", inArr)
+            cleanInput = True
+        else:
+            inKey = inArr
+
+        # if self.preTime is not None:
+        #     self.preFunc.Invoke({'input': 
+        self.lastRetKey = self.func.invoke(inKey, stats=self.stats)
+
+        if cleanInput:
+            self.ffCtx.kv.delete(inKey)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):

@@ -54,6 +54,10 @@ class RemoteCtx():
         self.kv = kvStore
         self.profs = util.profCollection() 
 
+        # Can be used by the function to store intermediate ephemeral state
+        # (not guaranteed to persist between calls)
+        self.scratch = None
+
 
 # We avoid importing and registering the same package multiple times, doing so
 # is inefficient and may be incorrect (we don't require that direct function
@@ -112,6 +116,9 @@ class DirectRemoteFunc(RemoteFunc):
 
     def Invoke(self, arg):
         with util.timer('t_libff_invoke', self.profs):
+            if self.fName not in self.funcs:
+                raise RuntimeError("Function '" + self.fName + "' not registered")
+
             return self.funcs[self.fName](arg, self.ctx)
 
 

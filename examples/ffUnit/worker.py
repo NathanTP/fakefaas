@@ -7,6 +7,13 @@ def echo(req, ctx):
     return req
 
 
+def state(req, ctx):
+    if 'scratchData' in req:
+        ctx.scratch = req['scratchData']
+
+    return {"cachedData" : ctx.scratch}
+
+
 random.seed(time.time())
 def perfSim(req, ctx):
     # You can time stuff
@@ -23,7 +30,7 @@ def perfSim(req, ctx):
     return {"validateMetric" : randomMetric}
 
 
-funcMap = {"echo" : echo, "perfSim" : perfSim}
+funcMap = {"echo" : echo, "perfSim" : perfSim, 'state' : state}
 
 def LibffInvokeRegister():
     return funcMap 

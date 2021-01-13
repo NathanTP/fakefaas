@@ -8,6 +8,7 @@ import argparse
 import subprocess as sp
 import itertools
 from contextlib import contextmanager
+import sys
 
 # Just to get its exception type
 import redis
@@ -22,61 +23,100 @@ import kaasServer
 import pygemm
 import pygemm.kaas
 
+class TestError(Exception):
+    def __init__(self, testName, msg):
+        self.testName = testName
+        self.msg = msg
+
+    def __str__(self):
+        return "Test {} failed: {}".format(self.testName, self.msg)
+
+def _testChainedOne(name, mode, clientType, shapes, libffCtx, kaasHandle):
+    inArr = pygemm.generateArr(shapes[0].a)
+
+    if clientType == 'kaas':
+        func = pygemm.kaas.ChainedMults("testchain"+name, shapes, libffCtx, kaasHandle)
+    elif clientType == 'faas':
+        func = pygemm.faas.ChainedMults("testchain"+name, shapes, libffCtx, mode=mode, useCuda=True)
+    else:
+        func = pygemm.local.ChainedMults("testchain"+name, shapes, ffCtx=libffCtx, useCuda=True)
+
+    baseFunc = pygemm.local.ChainedMults("testchain_baseline", shapes, bArrs=func.bArrs, useCuda=False)
+    baseRes = baseFunc.invoke(inArr)
+
+    retKey = func.invoke(inArr)
+    testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
+    dist = np.linalg.norm(testOut - baseRes)
+    if dist > 10:
+        return "First call returned wrong result\n" + "Distance: " + str(dist)
+
+    retKey = func.invoke(inArr)
+    testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
+    dist = np.linalg.norm(testOut - baseRes)
+    if dist > 10:
+        return "Second call returned wrong result\n" + "Distance: " + str(dist)
+
+    func.destroy()
+    return None
+
+
 def testChained(mode, clientType):
     libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx)
 
     shapes = [
             pygemm.mmShape(128,128,128),
             pygemm.mmShape(128,256,128),
             pygemm.mmShape(128,512,256) ]
 
-    inArr = pygemm.generateArr(shapes[0].a)
-
     if clientType == 'kaas':
-        func = pygemm.kaas.ChainedMults("testchain", shapes, libffCtx, kaasHandle)
-    elif clientType == 'faas':
-        func = pygemm.faas.ChainedMults("testchain", shapes, libffCtx, mode=mode, useCuda=True)
+        kaasHandle = kaasServer.getHandle(mode, libffCtx)
     else:
-        func = pygemm.local.ChainedMults("testchain", shapes, ffCtx=libffCtx, useCuda=True)
+        kaasHandle = None
 
-    retKey = func.invoke(inArr)
+    res = _testChainedOne("0", mode, clientType, shapes, libffCtx, kaasHandle)
+    if res is not None:
+        raise TestError("first func " + "_".join(["chained", mode, clientType]), res)
 
-    testOut = pygemm.getData(libffCtx, retKey, shapes[-1].c)
+    #===============================================================
+    # Create a new function handle to make sure cleanup works
+    #===============================================================
+    shapes = [
+            pygemm.mmShape(256,256,256),
+            pygemm.mmShape(256,128,256),
+            pygemm.mmShape(256,256,128) ]
+    res = _testChainedOne("1", mode, clientType, shapes, libffCtx, kaasHandle)
+    if res is not None:
+        raise TestError("second func " + "_".join(["chained", mode, clientType]), res)
 
-    baseFunc = pygemm.local.ChainedMults("testchain_baseline", shapes, bArrs=func.bArrs, useCuda=False)
-    baseArr = baseFunc.invoke(inArr)
-
-    func.destroy()
     libffCtx.kv.destroy()
-
-    diff = testOut - baseArr
-    dist = np.linalg.norm(diff)
-
-    if dist > 10:
-        print("FAIL")
-        print("Distance: " + str(dist))
-    else:
-        print("PASS")
+    print("PASS")
 
 
 def testClient(mode, clientType):
     libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx)
 
     if clientType == 'faas':
-        clientPlain = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode)
+        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode)
     elif clientType == 'kaas':
-        clientPlain = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle)
+        kaasHandle = kaasServer.getHandle(mode, libffCtx)
+        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle)
     else:
-        clientPlain = pygemm.local.benchClient("benchClientTest", 4, 1024, libffCtx)
+        client = pygemm.local.benchClient("benchClientTest", 4, 1024, libffCtx)
+
+    # benchclients manage most of the experiment themselves so we can't really
+    # verify correctness (we trust testChained to do that). But we will make
+    # sure the basic API runs without crashing.
+
+    inArr = pygemm.generateArr(client.shapes[0].a)
+    client.invoke(inArr)
+    testOut = client.getResult()
 
     start = time.time()
-    clientPlain.invokeN(2)
+    client.invokeN(2)
     tInvoke = time.time() - start 
 
-    stats = clientPlain.getStats()
-    clientPlain.destroy()
+    stats = client.getStats()
+    client.destroy()
     
     reported = stats['LocalStats']['t_client_invoke']
     measured = (tInvoke / 2)*1000
@@ -107,15 +147,6 @@ def testClient(mode, clientType):
     # clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
     # clientZipf.destroy()
 
-class TestError(Exception):
-    def __init__(self, testName, msg):
-        self.testName = testName
-        self.msg = msg
-
-    def __str__(self):
-        return "Test {} failed: {}".format(testName, msg)
-
-
 @contextmanager
 def testenv(testName, mode, clientType):
     if mode == 'process':
@@ -138,12 +169,20 @@ if __name__ == "__main__":
     modes = ['direct', 'process']
 
     # mode = 'direct'
-    # clientType = 'kaas'
+    # clientType = 'faas'
+    # benchName = "_".join(["chained", mode, clientType])
+    # with testenv(benchName, mode, clientType):
+    #     print(benchName)
+    #     testChained(mode, clientType)
+    #     print("PASS")
+    #     time.sleep(0.5)
+
     # benchName = "_".join(["client", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testClient(mode, clientType)
-        # time.sleep(0.5)
+    #     # testChained(mode, clientType)
+    # sys.exit() 
 
     for (mode, clientType) in itertools.product(modes, clientTypes):
         benchName = "_".join(["chained", mode, clientType])

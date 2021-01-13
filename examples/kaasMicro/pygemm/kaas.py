@@ -2,6 +2,8 @@ import kaasServer
 
 from .util import *
 
+faasWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
+
 class mmFunc():
     def _bufArgToBuf(self, arg, bname, shape, const=False):
         """Buffer args to various mmFunc methods can be ndarray, or kaasBuf,
@@ -114,7 +116,7 @@ class mmFunc():
 
 
 class ChainedMults():
-    def __init__(self, name, shapes, libffCtx, kaasHandle, bArrs=None):
+    def __init__(self, name, shapes, libffCtx, kaasHandle, preprocessTime=None, bArrs=None):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
@@ -124,12 +126,11 @@ class ChainedMults():
         self.ffCtx = libffCtx
         self.kHandle = kaasHandle
         self.shapes = shapes
+        self.preTime = preprocessTime
 
-        self.funcs = []
 
         # We keep these around so we can run 'invokeBaseline'
         self.bArrs = []
-
         if bArrs is None:
             # prevShape is used to validate the chain dimensions, it's the C shape
             # of the previous layer. For the first layer, we just set it to A's
@@ -146,12 +147,18 @@ class ChainedMults():
         else:
             self.bArrs = bArrs
 
+        self.funcs = []
         for i,b in enumerate(self.bArrs):
             self.funcs.append(mmFunc(name+"_l"+str(i),
                 (self.shapes[i].a, self.shapes[i].b),
                 self.ffCtx, self.kHandle,
                 constB=b))
 
+        if self.preTime is not None:
+            if isinstance(kaasHandle, libff.invoke.DirectRemoteFunc):
+                self.preFunc = libff.invoke.DirectRemoteFunc(faasWorkerPath, 'preprocess', self.ffCtx)
+            else:
+                self.preFunc = libff.invoke.ProcessRemoteFunc(faasWorkerPath, 'preprocess', self.ffCtx)
 
     def destroy(self):
         for f in self.funcs:
@@ -180,6 +187,10 @@ class ChainedMults():
             kerns.append(f.getKernFunc(aData = nextIn, cData = cBuf))
             nextIn = cBuf
 
+        if self.preTime is not None:
+            with ff.timer("t_client_preprocess", stats):
+                self.preFunc.Invoke({"input" : inBuf.name, "output" : inBuf.name, "processTime" : self.preTime})
+            
         with ff.timer("t_client_invoke", stats):
             req = kaasServer.kaasReq(kerns)
             self.kHandle.Invoke(req.toDict())
@@ -196,7 +207,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, rng=None):
+    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, preprocessTime=None, rng=None):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -234,7 +245,7 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas)
+        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas, preprocessTime=preprocessTime)
 
 
     def invoke(self, inArr):

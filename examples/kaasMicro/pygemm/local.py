@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import pycuda.driver as cuda
 import pycuda.autoinit
 from pycuda.compiler import SourceModule, DynamicModule
@@ -209,7 +210,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx=None, rng=None, useCuda=True):
+    def __init__(self, name, depth, sideLen, preprocessTime=None, ffCtx=None, rng=None, useCuda=True):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -223,6 +224,9 @@ class benchClient():
         None, invokeDelayed and invoke are identical. You may use
         benchClient.poisson() or benchClient.zipf() to generate an rng.
         
+        preprocessTime: If not None, the client will simulate a preprocessing
+        phase that takes preprocessTime ms to complete.
+
         Scale and depth must lead to reasonably sized matrices
         (mmFunc.matSizeA). The limits are:
             scale > (mmFunc.matSizeA * (1 + 2*depth))*4
@@ -230,6 +234,10 @@ class benchClient():
         """
         self.rng = rng
         self.name = name
+        if preprocessTime is not None:
+            self.preprocessSeconds = preprocessTime / 1000
+        else:
+            self.preprocessSeconds = 0
 
         # We only use this for the bare-minimum externally-visible stuff.
         # Basically just the input and output arrays. Users would typically use
@@ -256,6 +264,9 @@ class benchClient():
         last invocation with benchClient.getResult()."""
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
+
+        time.sleep(self.preprocessSeconds)
+
         self.lastRet = self.func.invoke(inArr, stats=self.stats)
 
         return self.lastRet
@@ -303,7 +314,7 @@ class benchClient():
                 res = getData(self.ffCtx, self.lastRet, self.shapes[-1].c)
             else:
                 res = self.lastRet
-        return ret     
+        return res
 
 
     def destroy(self):

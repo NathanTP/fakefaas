@@ -14,6 +14,39 @@ def helloWorld():
     print(resp)
 
 
+def testState(mode):
+    ctx = libff.invoke.RemoteCtx(None, None)
+
+    if mode == 'process':
+        func = libff.invoke.ProcessRemoteFunc(workerPath, "state", ctx)
+    else:
+        func = libff.invoke.DirectRemoteFunc(workerPath, "state", ctx)
+
+
+    resp = func.Invoke({"scratchData" : "firstData"})
+    if resp['cachedData'] != 'firstData':
+        print("FAIL: First invoke didn't return scrach data")
+        return False
+
+    resp = func.Invoke({})
+    if resp['cachedData'] != 'firstData':
+        print("FAIL: function didn't cache data")
+        return False
+
+    resp = func.Invoke({"scratchData" : "secondData"})
+    if resp['cachedData'] != 'secondData':
+        print("FAIL: function didn't return new data")
+        return False
+
+    resp = func.Invoke({})
+    if resp['cachedData'] != 'secondData':
+        print("FAIL: function didn't replace cache data")
+        return False
+
+    print("PASS")
+    return True
+
+
 def stats():
     repeat = 2
     ctx = libff.invoke.RemoteCtx(None, None)
@@ -83,10 +116,13 @@ def testAsync():
     return True
 
 if __name__ == "__main__":
-    if not stats():
-        sys.exit(1)
+    # if not stats():
+    #     sys.exit(1)
 
     # helloWorld()
 
     # if not testAsync():
     #     sys.exit(1)
+
+    if not testState('process'):
+        sys.exit(1)

@@ -50,6 +50,16 @@ class mmShape():
         return matShape[0]*matShape[1]*4
 
 
+    def __eq__(self, other):
+        if not isinstance(other, mmShape):
+            return False
+
+        if self.M != other.M or self.N != other.N or self.K != other.K:
+            return False
+
+        return True
+
+
 rng = np.random.default_rng(0)
 def generateArr(shape):
     arr = rng.random(shape, dtype=np.float32)

@@ -58,22 +58,22 @@ class Redis(kv):
 
 
     def put(self, k, v, profile=None):
-        with timer("serialize", profile):
+        with timer("t_serialize", profile):
             if self.serialize:
                 v = pickle.dumps(v)
 
-        with timer("write", profile):
+        with timer("t_write", profile):
             self.handle.set(k, v)
 
 
     def get(self, k, profile=None):
-        with timer("read", profile):
+        with timer("t_read", profile):
             raw = self.handle.get(k)
 
         if raw is None:
             raise KVKeyError(k)
 
-        with timer("deserialize", profile):
+        with timer("t_deserialize", profile):
             if self.serialize and raw is not None:
                 return pickle.loads(raw)
             else:
@@ -81,7 +81,7 @@ class Redis(kv):
 
 
     def delete(self, *keys, profile=None):
-        with timer("delete", profile):
+        with timer("t_delete", profile):
             ret = self.handle.delete(*keys)
 
 
@@ -105,24 +105,24 @@ class Local(kv):
 
 
     def put(self, k, v, profile=None):
-        with timer("serialize", profile):
+        with timer("t_serialize", profile):
             if self.serialize:
                  v = pickle.dumps(v)
             elif self.copy:
                  v = copy.deepcopy(v)
 
-        with timer("write", profile):
+        with timer("t_write", profile):
             self.store[k] = v
 
 
     def get(self, k, profile=None):
-        with timer("read", profile):
+        with timer("t_read", profile):
             try:
                 raw = self.store[k]
             except KeyError:
                 return None
 
-        with timer("deserialize", profile):
+        with timer("t_deserialize", profile):
             if self.serialize:
                 return pickle.loads(raw)
             elif self.copy:
@@ -132,7 +132,7 @@ class Local(kv):
 
 
     def delete(self, *keys, profile=None):
-        with timer("delete", profile):
+        with timer("t_delete", profile):
             for k in keys:
                 try:
                     del self.store[k]

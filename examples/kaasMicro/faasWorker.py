@@ -45,10 +45,6 @@ def sgemm(req, ctx):
         - 'useCuda' : Boolean requesting GPU acceleration
         - 'preprocess' : Time (in ms) to preprocess before executing the gemm.
     """
-    # print("INVOKING", file=sys.stderr)
-    # print(type(req), file=sys.stderr)
-    # print(req, file=sys.stderr)
-    # print("\n\n", file=sys.stderr)
     shapes = [ pygemm.mmShape(s[0], s[1], s[2]) for s in req['shapes'] ]
 
     reqState = sgemmState(shapes, req['bArrs'])
@@ -60,8 +56,11 @@ def sgemm(req, ctx):
         for bKey, shape in zip(req['bArrs'], shapes):
             bArrs.append(pygemm.getData(ctx, bKey, shape.b)) 
 
-        reqState.func = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'])
+        reqState.func = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'], stats=ctx.profs)
         ctx.scratch = reqState
+
+    # Gotta reset on each call, can't cache
+    ctx.scratch.func.stats = ctx.profs
 
     # If you include preprocess in sgemm directly, we simulate a work that does
     # both preprocessing and GPU calculation in the same function. You can also
@@ -74,16 +73,16 @@ def sgemm(req, ctx):
 
     outArr = ctx.scratch.func.invoke(inArr)
 
-    ctx.kv.put(req['output'], outArr)
+    ctx.kv.put(req['output'], outArr, profile=ctx.profs.mod('kv'))
 
     return {}
 
 
 def preprocess(req, ctx):
     """Simulate a preprocessing phase that precedes sgemm."""
-    inp = ctx.kv.get(req['input'])
+    inp = ctx.kv.get(req['input'], profile=ctx.profs.mod('kv'))
     time.sleep(req['processTime'] / 1000)
-    ctx.kv.put(req['output'], inp)
+    ctx.kv.put(req['output'], inp, profile=ctx.profs.mod('kv'))
 
 
 funcMap = {'sgemm' : sgemm, 'preprocess' : preprocess}

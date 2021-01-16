@@ -31,12 +31,15 @@ def updateProf(name, val, level=1):
         profs[name].update(val)
 
 
-def getProf(level=1):
+def getProf(level=1, mod=None):
     """Returns the profs object (ff.profCollection) for this level. If level is
     above the current profLevel, Non is returned. This is suitable for use in a
     ff.timer context."""
     if level <= profLevel:
-        return profs
+        if mod is None:
+            return profs
+        else:
+            return profs.mod(mod)
     else:
         return None
 
@@ -374,7 +377,7 @@ class bufferCache():
                     self.ephemerals[bSpec.name] = buf
             else:
                 with ff.timer('t_hostDLoad', getProf(), final=False):
-                    raw = self.kv.get(bSpec.name)
+                    raw = self.kv.get(bSpec.name, profile=getProf(mod='kv'))
                 if raw is None:
                     logging.debug("Loading (new buffer): " + bSpec.name)
                     buf = kaasBuf.fromSpec(bSpec)
@@ -407,7 +410,7 @@ class bufferCache():
                 # pickled. This should still be zero copy.
                 logging.debug("Writing back to kv: " + buf.name)
                 with ff.timer('t_hostDWriteBack', getProf(), final=False):
-                    self.kv.put(buf.name, np.asarray(buf.hbuf))
+                    self.kv.put(buf.name, np.asarray(buf.hbuf), profile=getProf(mod='kv'))
             buf.dirty = False
 
 

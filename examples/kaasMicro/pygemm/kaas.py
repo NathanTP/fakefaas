@@ -12,7 +12,7 @@ class mmFunc():
         if isinstance(arg, kaasServer.bufferSpec):
             return arg
         elif isinstance(arg, np.ndarray):
-            self.ffCtx.kv.put(self.name + "_" + bname, arg)
+            self.ffCtx.kv.put(self.name + "_" + bname, arg, profile=self.stats.mod('kv'))
         elif arg is not None:
             raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
 
@@ -22,7 +22,7 @@ class mmFunc():
         return buf
 
 
-    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None):
+    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None, stats=None):
         """Create a matmul function invoker. Shape should be the two matrix
         dimensions [(arows, acols), (brows, bcols)].
         
@@ -32,6 +32,7 @@ class mmFunc():
         self.name = name
         self.ffCtx = libffCtx
         self.kHandle = kaasHandle
+        self.stats = stats
 
         # We remember every array we've allocated in the kv store so that we
         # can destroy them later.
@@ -48,7 +49,7 @@ class mmFunc():
 
         # dims is a property of a multiplier function, not any particular
         # invocation. We upload it at registration time.
-        self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64))
+        self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64), profile=self.stats.mod('kv'))
         self.dimBuf = kaasServer.bufferSpec(self.name + "_dims", 4*8)
         self.generatedBufs.append(self.dimBuf.name)
 
@@ -93,7 +94,7 @@ class mmFunc():
             outputs = [cBuf])
 
 
-    def invoke(self, aData=None, bData=None, cData=None, times=None):
+    def invoke(self, aData=None, bData=None, cData=None):
         """Invoke this multiplier with inputs uploaded with 'name' (using
         uploadArrays()). Invoke returns the name of the result in libff.kv.
         Times may be provided to record invocation statistics. See
@@ -101,7 +102,7 @@ class mmFunc():
         kern = self.getKernFunc(aData, bData, cData)
 
         req = kaasServer.kaasReq([ kern ])
-        with libff.timer("t_client_invoke", times):
+        with libff.timer("t_client_invoke", self.stats):
             self.kHandle.Invoke(req.toDict())
 
         return kern.outputs[0].name 
@@ -116,7 +117,7 @@ class mmFunc():
 
 
 class ChainedMults():
-    def __init__(self, name, shapes, libffCtx, kaasHandle, preprocessTime=None, bArrs=None):
+    def __init__(self, name, shapes, libffCtx, kaasHandle, preprocessTime=None, bArrs=None, stats=None):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
@@ -127,6 +128,7 @@ class ChainedMults():
         self.kHandle = kaasHandle
         self.shapes = shapes
         self.preTime = preprocessTime
+        self.stats = stats
 
 
         # We keep these around so we can run 'invokeBaseline'
@@ -152,24 +154,26 @@ class ChainedMults():
             self.funcs.append(mmFunc(name+"_l"+str(i),
                 (self.shapes[i].a, self.shapes[i].b),
                 self.ffCtx, self.kHandle,
-                constB=b))
+                constB=b, stats=self.stats))
 
         if self.preTime is not None:
             if isinstance(kaasHandle, libff.invoke.DirectRemoteFunc):
-                self.preFunc = libff.invoke.DirectRemoteFunc(faasWorkerPath, 'preprocess', self.ffCtx)
+                self.preFunc = libff.invoke.DirectRemoteFunc(faasWorkerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('preprocess'))
             else:
-                self.preFunc = libff.invoke.ProcessRemoteFunc(faasWorkerPath, 'preprocess', self.ffCtx)
+                self.preFunc = libff.invoke.ProcessRemoteFunc(faasWorkerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('preprocess'))
 
     def destroy(self):
         for f in self.funcs:
             f.destroy()
 
 
-    def invoke(self, inBuf, outBuf=None, stats=None):
+    def invoke(self, inBuf, outBuf=None):
         generatedInput = False
         if isinstance(inBuf, np.ndarray):
-            with ff.timer("t_write_input", stats):
-                self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
+            with ff.timer("t_write_input", self.stats):
+                self.ffCtx.kv.put(self.name+"_l0_a", inBuf, stats=self.stats.mod('kv'))
             inBuf = kaasServer.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
             generatedInput = True
 
@@ -188,10 +192,10 @@ class ChainedMults():
             nextIn = cBuf
 
         if self.preTime is not None:
-            with ff.timer("t_client_preprocess", stats):
+            with ff.timer("t_preprocess", self.stats):
                 self.preFunc.Invoke({"input" : inBuf.name, "output" : inBuf.name, "processTime" : self.preTime})
             
-        with ff.timer("t_client_invoke", stats):
+        with ff.timer("t_invoke", self.stats):
             req = kaasServer.kaasReq(kerns)
             self.kHandle.Invoke(req.toDict())
 
@@ -207,7 +211,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, preprocessTime=None, rng=None):
+    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, preprocessTime=None, rng=None, stats=None):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -225,6 +229,10 @@ class benchClient():
         (mmFunc.matSizeA). The limits are:
             scale > (mmFunc.matSizeA * (1 + 2*depth))*4
             scale a multiple of mmFunc.matSizeA*4
+
+        METRICS: benchClient sets the following metrics in stats
+            - t_e2e: The total time for one invocation of the prediction,
+              including any data movement, pre/post processing, and the model itself.
         """
         self.ff = ffCtx
         self.kaas = kaasCtx
@@ -232,7 +240,7 @@ class benchClient():
         self.rng = rng
         self.name = name
         self.generatedBufs = []
-        self.stats = ff.profCollection()
+        self.stats = stats
 
         # Used to name any generated arrays
         self.nextArrayID = 0
@@ -245,7 +253,7 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas, preprocessTime=preprocessTime)
+        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas, preprocessTime=preprocessTime, stats=stats)
 
 
     def invoke(self, inArr):
@@ -255,7 +263,9 @@ class benchClient():
         last invocation with benchClient.getResult()."""
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
-        self.lastRetKey = self.func.invoke(inArr, stats=self.stats)
+
+        with ff.timer('t_e2e', self.stats):
+            self.lastRetKey = self.func.invoke(inArr)
         return self.lastRetKey
 
 
@@ -292,9 +302,10 @@ class benchClient():
 
 
     def getStats(self, reset=False):
-        allStats = self.kaas.Stats(reset=reset)
-        allStats['LocalStats'] = {**allStats['LocalStats'], **self.stats.report()}
-        return allStats 
+        myStats = self.stats.report()
+        if reset:
+            self.stats = ff.profCollection()
+        return {**self.kaas.Stats(reset=reset), **myStats}
 
 
     def getResult(self):
@@ -323,7 +334,7 @@ class benchClient():
             arrName = self.name + "_array" + str(self.nextArrayID)
             self.nextArrayID += 1
 
-            self.ff.kv.put(arrName, arg)
+            self.ff.kv.put(arrName, arg, profile=self.stats.mod('kv'))
             b = kaasServer.bufferSpec(arrName, arg.nbytes)
             self.generatedBufs.append(b.name)
             return b

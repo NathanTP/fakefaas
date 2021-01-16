@@ -14,14 +14,18 @@ class ChainedMults():
         self.ffCtx = ffCtx
         self.name = name
         self.preprocessTime = preprocessTime
+        self.stats = stats
+        self.kvStats = self.stats.mod('kv')
 
         # List of keys we are responsible for destroying
         self.ownedKeys = []
 
         if mode == 'direct':
-            self.remFunc = ff.invoke.DirectRemoteFunc(workerPath, 'sgemm', self.ffCtx)
+            self.remFunc = ff.invoke.DirectRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+                    stats=self.stats.mod('remfunc'))
         else:
-            self.remFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'sgemm', self.ffCtx)
+            self.remFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+                    stats=self.stats.mod('remfunc'))
 
         self.bArrs = []
         if bArrs is None:
@@ -42,16 +46,16 @@ class ChainedMults():
 
         self.bNames = [ name + "_b" + str(i) for i in range(len(self.bArrs)) ]
         for name,arr in zip(self.bNames, self.bArrs):
-            self.ffCtx.kv.put(name, arr)
+            self.ffCtx.kv.put(name, arr, profile=self.kvStats)
             self.ownedKeys += self.bNames
 
 
-    def invoke(self, inArr, outBuf=None, stats=None):
+    def invoke(self, inArr, outBuf=None):
         cleanInput = False
         if not isinstance(inArr, str):
             inKey = self.name + "_input"
-            with ff.timer("t_write_input", stats):
-                self.ffCtx.kv.put(self.name + "_input", inArr)
+            with ff.timer("t_write_input", self.stats):
+                self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
             cleanInput = True
         else:
             inKey = inArr
@@ -68,31 +72,36 @@ class ChainedMults():
         if self.preprocessTime is not None:
             req['preprocess'] = self.preprocessTime
 
-        with ff.timer("t_client_invoke", stats):
+        with ff.timer("t_invoke", self.stats):
             self.remFunc.Invoke(req)
 
         if cleanInput:
-            self.ffCtx.kv.delete(inKey)
+            self.ffCtx.kv.delete(inKey, profile=self.kvStats)
 
         return outKey
 
 
     def destroy(self):
         for key in self.ownedKeys:
-            self.ffCtx.kv.delete(key)
+            self.ffCtx.kv.delete(key, profile=self.kvStats)
         self.remFunc.Close()
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, mode='direct', rng=None, useCuda=True):
+    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, mode='direct', rng=None, useCuda=True, stats=None):
         """A general driver for the sgemm benchmark.
             - preprocessTime: amount of time to spend preprocessing on a
               host-only function, None skips the preprocess step entirely.
+
+        METRICS: benchClient sets the following metrics in stats
+            - t_e2e: The total time for one invocation of the prediction,
+              including any data movement, pre/post processing, and the model itself.
         """
         self.name = name
         self.rng = rng
         self.nbytes = sizeFromSideLen(depth, sideLen)
-        self.stats = ff.profCollection()
+        self.stats = stats 
+        self.kvStats = self.stats.mod('kv')
         self.ffCtx = ffCtx
         self.preTime = preprocessTime
 
@@ -105,7 +114,7 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, preprocessTime=self.preTime)
+        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, preprocessTime=self.preTime, stats=self.stats)
 
         if self.preTime is not None:
             if mode == 'direct':
@@ -118,21 +127,22 @@ class benchClient():
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
 
-        cleanInput = False
-        if not isinstance(inArr, str):
-            inKey = self.name + "_input"
-            with ff.timer("t_write_input", self.stats):
-                self.ffCtx.kv.put(self.name + "_input", inArr)
-            cleanInput = True
-        else:
-            inKey = inArr
+        with ff.timer('t_e2e', self.stats):
+            cleanInput = False
+            if not isinstance(inArr, str):
+                inKey = self.name + "_input"
+                with ff.timer("t_write_input", self.stats):
+                    self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
+                cleanInput = True
+            else:
+                inKey = inArr
 
-        # if self.preTime is not None:
-        #     self.preFunc.Invoke({'input': 
-        self.lastRetKey = self.func.invoke(inKey, stats=self.stats)
+            # if self.preTime is not None:
+            #     self.preFunc.Invoke({'input': 
+            self.lastRetKey = self.func.invoke(inKey)
 
-        if cleanInput:
-            self.ffCtx.kv.delete(inKey)
+            if cleanInput:
+                self.ffCtx.kv.delete(inKey, profile=self.kvStats)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
@@ -150,7 +160,7 @@ class benchClient():
             with ff.timer("t_write_input", self.stats):
                 for i,b in enumerate(inBufs):
                     inName = self.name + "_input" + str(i)
-                    self.ffCtx.kv.put(inName, b)
+                    self.ffCtx.kv.put(inName, b, profile=self.kvStats)
                     inNames.append(inName)
             inBufs = inNames
             deleteInputs = True
@@ -160,19 +170,16 @@ class benchClient():
             if fetchResult:
                 self.getResult()
 
-            self.ffCtx.kv.delete(self.lastRetKey)
+            self.ffCtx.kv.delete(self.lastRetKey, profile=self.kvStats)
 
         if deleteInputs:
             for key in inBufs:
-                self.ffCtx.kv.delete(key)
+                self.ffCtx.kv.delete(key, profile=self.kvStats)
 
 
-    def getStats(self, reset=False):
-        funcStats = self.func.remFunc.Stats()
-        clientStats = self.stats.report()
-
-        funcStats['LocalStats'] = {**funcStats['LocalStats'], **clientStats}
-        return funcStats
+    def getStats(self):
+        report = self.stats.report()
+        return report 
 
 
     def getResult(self):

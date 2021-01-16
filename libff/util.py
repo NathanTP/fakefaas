@@ -45,8 +45,12 @@ class profCollection(collections.abc.MutableMapping):
     accessed."""
 
     def __init__(self, *args, **kwargs):
+        # a map of modules included in these stats. Each module is a
+        # profCollection. Submodules can nest indefinitely.
+        self.mods = {}
+
         self.profs = dict()
-        self.update(dict(*args, **kwargs))  # use the free update to set keys
+        self.update(dict(*args, **kwargs))
 
     def __getitem__(self, key):
         if key not in self.profs:
@@ -68,7 +72,16 @@ class profCollection(collections.abc.MutableMapping):
     def __str__(self):
         return json.dumps(self.report(), indent=4)
 
+
+    def mod(self, name):
+        if name not in self.mods:
+            self.mods[name] = profCollection()
+
+        return self.mods[name]
+
+
     def merge(self, new, prefix=''):
+        # Start by merging the direct stats
         for k,v in new.items():
             newKey = prefix+k
             if newKey in self.profs:
@@ -76,8 +89,30 @@ class profCollection(collections.abc.MutableMapping):
             else:
                 self.profs[newKey] = v
 
+        # Now recursively handle modules
+        for name,mod in new.mods.items():
+            # Merging into an empty profCollection causes a deep copy 
+            if name not in self.mods:
+                self.mods[name] = profCollection()
+            self.mods[name].merge(mod)
+
     def report(self):
-        return { name : v.mean() for name, v in self.profs.items() }
+        flattened = { name : v.mean() for name, v in self.profs.items() }
+
+        for name,mod in self.mods.items():
+            flattened = {**flattened, **{ name+":"+itemName : v for itemName,v in mod.report().items() }}
+
+        return flattened
+
+
+    def reset(self):
+        """Clears all existing metrics. Any instantiated modules will continue
+        to exist, but will be empty (it is safe to keep references to modules
+        after reset()).
+        """
+        self.profs = {}
+        for mod in self.mods.values():
+            mod.reset()
 
 # ms
 timeScale = 1000

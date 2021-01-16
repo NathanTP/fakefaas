@@ -22,7 +22,7 @@ class RemoteFunc(abc.ABC):
     """Represents a remote (or at least logically separate) function"""
 
     @abc.abstractmethod
-    def __init__(self, packagePath, funcName, context):
+    def __init__(self, packagePath, funcName, context, stats=None):
         """Create a remote function from the provided package.funcName.
         arrayMnt should point to wherever child workers should look for
         arrays."""
@@ -52,7 +52,7 @@ class RemoteCtx():
     def __init__(self, arrayStore, kvStore):
         self.array = arrayStore
         self.kv = kvStore
-        self.profs = util.profCollection() 
+        self.stats = util.profCollection() 
 
         # Can be used by the function to store intermediate ephemeral state
         # (not guaranteed to persist between calls)
@@ -83,15 +83,16 @@ class DirectRemoteFunc(RemoteFunc):
     returns a mapping of function name -> function object. This is similar to
     the 'funcs' argument to RemoteProcessServer."""
 
-    def __init__(self, packagePath, funcName, context):
+    def __init__(self, packagePath, funcName, context, stats=None):
         self.fName = funcName
 
         # The profs in ctx are used only for passing to the function,
-        # self.profs is for the client-side RemoteFun
+        # self.stats is for the client-side RemoteFun
         self.ctx = context
-        self.profs = util.profCollection() 
+        self.stats = util.profCollection() 
+        self.ctx.profs = self.stats.mod('worker')
 
-        with util.timer("t_libff_init", self.profs):
+        with util.timer("t_init", self.stats):
             if packagePath in _importedFuncPackages:
                 self.funcs = _importedFuncPackages[packagePath]
             else:
@@ -115,7 +116,7 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Invoke(self, arg):
-        with util.timer('t_libff_invoke', self.profs):
+        with util.timer('t_invoke', self.stats):
             if self.fName not in self.funcs:
                 raise RuntimeError("Function '" + self.fName + "' not registered")
 
@@ -123,12 +124,9 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Stats(self, reset=False):
-        report = { "LocalStats" : self.profs.report(),
-                   "WorkerStats" : self.ctx.profs.report() }
-
+        report = self.stats.report()
         if reset:
-            self.profs = util.profCollection() 
-            self.ctx.profs = util.profCollection() 
+            self.stats.reset()
 
         return report 
 
@@ -148,8 +146,8 @@ class ProcessRemoteFuncFuture():
 
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
-    def __init__(self, packagePath, funcName, context):
-        self.profs = util.profCollection() 
+    def __init__(self, packagePath, funcName, context, stats=None):
+        self.stats = stats
 
         # ID of the next request to make and the last completed request (respectively)
         self.nextID = 0 
@@ -163,7 +161,7 @@ class ProcessRemoteFunc(RemoteFunc):
         # to capture this in invoke by adding a 'ready' signal from the process
         # that we wait for before invoking (right now stdin just buffers the
         # input while the process starts up).
-        with util.timer('t_libff_init', self.profs):
+        with util.timer('t_init', self.stats):
             if context.array is not None:
                 arrayMnt = context.array.FileMount
             else:
@@ -205,7 +203,7 @@ class ProcessRemoteFunc(RemoteFunc):
         #     out, err = self.proc.communicate()
         #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
 
-        with util.timer('t_requestEncode', self.profs):
+        with util.timer('t_requestEncode', self.stats):
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
 
@@ -222,7 +220,7 @@ class ProcessRemoteFunc(RemoteFunc):
 
         # Decoding is deferred until future await to make errors more clear
         rawResp = self.completedReqs.pop(reqID)
-        with util.timer('t_responseDecode', self.profs):
+        with util.timer('t_responseDecode', self.stats):
             try:
                 resp = json.loads(rawResp)
             except:
@@ -232,24 +230,21 @@ class ProcessRemoteFunc(RemoteFunc):
             raise InvocationError(resp['error'])
 
 
-        self.ctx.profs.merge(resp['stats'])
+        self.stats.mod('worker').merge(resp['stats'])
         return resp['resp']
 
 
     def Invoke(self, arg):
-        with util.timer('t_libff_invoke', self.profs):
+        with util.timer('t_invoke', self.stats):
             fut = self.InvokeAsync(arg)
             resp = fut.get()
         return resp 
 
 
     def Stats(self, reset=False):
-        report = { "LocalStats" : util.reportTimers(self.profs),
-                   "WorkerStats" : util.reportTimers(self.ctx.profs) }
-
+        report = self.stats.report()
         if reset:
-            self.profs = util.profCollection()
-            self.ctx.profs = util.profCollection()
+            self.stats.reset()
 
         return report 
 

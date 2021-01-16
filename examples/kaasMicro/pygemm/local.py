@@ -48,7 +48,7 @@ eventMetrics2 = [
 
 
 class ChainedMults():
-    def __init__(self, name, shapes, ffCtx=None, bArrs=None, useCuda=True):
+    def __init__(self, name, shapes, ffCtx=None, bArrs=None, useCuda=True, stats=None):
         """Represents a series of matmuls where each multiply takes the output
         of the previous as A and uses a constant B. This simulates a basic
         fully-connected neural net.
@@ -61,11 +61,8 @@ class ChainedMults():
         self.useCuda = useCuda
         self.name = name
         self.ffCtx = ffCtx
+        self.stats = stats
 
-        # local emulates a worker directly so we collect stats that would
-        # normally happen in the worker here.
-        self.workerStats = ff.profCollection()
-        
         # devBarrs is cuda pointers and will be allocated on the first invocation
         self.devBarrs = None
 
@@ -89,31 +86,32 @@ class ChainedMults():
     # We delay most initialization until the first invocation to emulate
     # cold-start behavior of something like faas or kaas.
     def _checkInitialized(self):
-        if self.useCuda:
-            with ff.timer("t_kernelLoad", checkLevel(self.workerStats, 1), final=False):
-                global cudaLib, gemmFunc
-                if cudaLib is None:
-                    cudaLib = cuda.module_from_file(str(kernsDir / "gemm.cubin"))
-                    gemmFunc = cudaLib.get_function("sgemm")
-                    gemmFunc.prepare(["P"]*4)
+        with ff.timer('t_modelInit', checkLevel(self.stats, 1)): 
+            if self.useCuda:
+                with ff.timer("t_kernelLoad", checkLevel(self.stats, 1), final=False):
+                    global cudaLib, gemmFunc
+                    if cudaLib is None:
+                        cudaLib = cuda.module_from_file(str(kernsDir / "gemm.cubin"))
+                        gemmFunc = cudaLib.get_function("sgemm")
+                        gemmFunc.prepare(["P"]*4)
 
-            if self.devBarrs is None:
-                self.devBarrs = []
-                for harr in self.bArrs:
-                    with ff.timer("t_cudaMM", checkLevel(self.workerStats, 1), final=False):
-                        darr = cuda.mem_alloc(harr.nbytes)
+                if self.devBarrs is None:
+                    self.devBarrs = []
+                    for harr in self.bArrs:
+                        with ff.timer("t_cudaMM", checkLevel(self.stats, 1), final=False):
+                            darr = cuda.mem_alloc(harr.nbytes)
 
-                    updateProf(self.workerStats, 's_htod', 1)
-                    with ff.timer('t_htod', checkLevel(self.workerStats, 1), final=False):
-                        cuda.memcpy_htod(darr, harr)
+                        updateProf(self.stats, 's_htod', 1)
+                        with ff.timer('t_htod', checkLevel(self.stats, 1), final=False):
+                            cuda.memcpy_htod(darr, harr)
 
-                    self.devBarrs.append(darr)
+                        self.devBarrs.append(darr)
 
 
     def _invokeCuda(self, inBuf, outBuf=None):
         self._checkInitialized()
 
-        with ff.timer("t_cudaMM", checkLevel(self.workerStats, 1), final=False):
+        with ff.timer("t_cudaMM", checkLevel(self.stats, 1), final=False):
             inDbuf = cuda.mem_alloc(inBuf.nbytes)
 
             cBufs = []
@@ -126,20 +124,20 @@ class ChainedMults():
                 dimBufs.append(cuda.mem_alloc(4*8))
 
         # this is factored out of the allocation loop to make profiling cleaner
-        with ff.timer("t_zero", checkLevel(self.workerStats, 1), final=False):
+        with ff.timer("t_zero", checkLevel(self.stats, 1), final=False):
             for cBuf, shape in zip(cBufs, self.shapes):
                 cuda.memset_d8(cBuf, 0, mmShape.nbytes(shape.c))
 
-        updateProf(self.workerStats, 's_htod', inBuf.nbytes, 1)
-        with ff.timer("t_htod", checkLevel(self.workerStats, 1), final=False):
+        updateProf(self.stats, 's_htod', inBuf.nbytes, 1)
+        with ff.timer("t_htod", checkLevel(self.stats, 1), final=False):
             cuda.memcpy_htod(inDbuf, inBuf)
 
         aBuf = inDbuf
         for i in range(len(self.shapes)):
             dims = np.asarray(list(self.shapes[i].a) + list(self.shapes[i].b))
 
-            updateProf(self.workerStats, 's_htod', dims.nbytes, 1)
-            with ff.timer("t_htod", checkLevel(self.workerStats, 1), final=False):
+            updateProf(self.stats, 's_htod', dims.nbytes, 1)
+            with ff.timer("t_htod", checkLevel(self.stats, 1), final=False):
                 cuda.memcpy_htod(dimBufs[i], dims)
 
             gridDim = (self.shapes[i].M // tileM, self.shapes[i].N // tileN, 1)
@@ -147,7 +145,7 @@ class ChainedMults():
             sharedSize = tile_tb_height * tileN * 4
 
             
-            with ff.timer('t_kernel', checkLevel(self.workerStats, level=2), final=False):
+            with ff.timer('t_kernel', checkLevel(self.stats, level=2), final=False):
                 gemmFunc.prepared_call(gridDim, blockDim,
                         dimBufs[i], aBuf, self.devBarrs[i], cBufs[i],
                         shared_size=sharedSize)
@@ -160,12 +158,12 @@ class ChainedMults():
         
         hostC = np.zeros((self.shapes[-1].M, self.shapes[-1].N), dtype=np.float32)
 
-        updateProf(self.workerStats, 's_dtoh', hostC.nbytes, 1)
-        with ff.timer("t_dtoh", checkLevel(self.workerStats, 1)):
+        updateProf(self.stats, 's_dtoh', hostC.nbytes, 1)
+        with ff.timer("t_dtoh", checkLevel(self.stats, 1)):
             cuda.memcpy_dtoh(hostC, cBufs[-1])
 
         # Free temporaries
-        with ff.timer("t_cudaMM", checkLevel(self.workerStats, 1)):
+        with ff.timer("t_cudaMM", checkLevel(self.stats, 1)):
             inDbuf.free()
             for i in range(len(self.shapes)):
                 cBufs[i].free()
@@ -184,20 +182,20 @@ class ChainedMults():
 
 
     def invoke(self, inBuf, outBuf=None, stats=None):
-        with ff.timer("t_client_invoke", stats): 
+        with ff.timer("t_invoke", stats): 
             if self.useCuda:
                 res = self._invokeCuda(inBuf, outBuf)
 
                 if profLevel >= 1:
                     for metric in eventMetrics1:
-                        self.workerStats[metric].increment()
+                        self.stats[metric].increment()
                 if profLevel >= 2:
                     for metric in eventMetrics2:
-                        self.workerStats[metric].increment()
+                        self.stats[metric].increment()
             else:
                 res = self._invokeNP(inBuf, outBuf)
         if self.ffCtx is not None:
-            self.ffCtx.kv.put(self.name+"_out", res)
+            self.ffCtx.kv.put(self.name+"_out", res, profile=stats.mod('kv'))
             return self.name+"_out"
         else:
             return res
@@ -210,7 +208,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, preprocessTime=None, ffCtx=None, rng=None, useCuda=True):
+    def __init__(self, name, depth, sideLen, preprocessTime=None, ffCtx=None, rng=None, useCuda=True, stats=None):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -231,9 +229,14 @@ class benchClient():
         (mmFunc.matSizeA). The limits are:
             scale > (mmFunc.matSizeA * (1 + 2*depth))*4
             scale a multiple of mmFunc.matSizeA*4
+
+        METRICS: benchClient sets the following metrics in stats
+            - t_e2e: The total time for one invocation of the prediction,
+              including any pre/post processing and the model itself.
         """
         self.rng = rng
         self.name = name
+        self.stats = stats
         if preprocessTime is not None:
             self.preprocessSeconds = preprocessTime / 1000
         else:
@@ -244,8 +247,6 @@ class benchClient():
         # the local memory kv anyway.
         self.ffCtx = ffCtx
 
-        self.stats = ff.profCollection()
-
         self.nbytes = sizeFromSideLen(depth, sideLen)
 
         if self.nbytes > DEVICE_MEM_CAP:
@@ -254,7 +255,7 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx=ffCtx, useCuda=useCuda)
+        self.func = ChainedMults(name, self.shapes, ffCtx=ffCtx, useCuda=useCuda, stats=self.stats.mod('worker'))
 
 
     def invoke(self, inArr):
@@ -265,9 +266,10 @@ class benchClient():
         if self.rng is not None:
             time.sleep(self.rng() / 1000)
 
-        time.sleep(self.preprocessSeconds)
+        with ff.timer('t_e2e', self.stats):
+            time.sleep(self.preprocessSeconds)
 
-        self.lastRet = self.func.invoke(inArr, stats=self.stats)
+            self.lastRet = self.func.invoke(inArr, stats=self.stats)
 
         return self.lastRet
 
@@ -296,13 +298,8 @@ class benchClient():
             self.lastRet = self.invoke(inBufs[ i % len(inBufs) ])
 
 
-    def getStats(self, reset=False):
-        local = self.stats.report()
-        local['t_write_input'] = 0
-        return {
-                "LocalStats" : local,
-                "WorkerStats" : self.func.workerStats.report()
-        }
+    def getStats(self):
+        return self.stats.report()
 
 
     def getResult(self):

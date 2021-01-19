@@ -51,8 +51,9 @@ def stats():
     repeat = 2
     ctx = libff.invoke.RemoteCtx(None, None)
 
+    stats = libff.profCollection()
     # func = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx)
-    func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx)
+    func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats)
 
     # Cold Start
     start = time.time()
@@ -66,7 +67,7 @@ def stats():
     runtimeMeasured = ((time.time() - start) / repeat)*1000
 
     fail = False
-    if coldStats['WorkerStats']['runtime'] < 1000 or coldTime < 1000:
+    if coldStats['worker:runtime'] < 1000 or coldTime < 1000:
         fail = True
         print("FAIL: runtime too fast")
 
@@ -116,10 +117,10 @@ def testAsync():
     return True
 
 if __name__ == "__main__":
-    # if not stats():
-    #     sys.exit(1)
+    if not stats():
+        sys.exit(1)
 
-    # helloWorld()
+    helloWorld()
 
     if not testAsync():
         sys.exit(1)

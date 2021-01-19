@@ -139,15 +139,140 @@ class DirectRemoteFunc(RemoteFunc):
         pass
 
 
+class _processExecutor():
+    # executors may be shared by multiple clients. As such, they have no
+    # persistent stats of their own. Each call has a stats argument that can be
+    # filled in by whoever is calling.
+    def __init__(self, packagePath, arrayMnt=None):
+        self.arrayMnt = arrayMnt
+        self.packagePath = packagePath
+        # Next id to use for outgoing mesages
+        self.nextId = 0
+
+        # Latest Id we have a response for. For now we assume everything is in
+        # order wrt a single executor.
+        self.lastResp = -1
+        self.resps = {} # reqID -> raw message
+
+        # Python's package management is garbage, if the worker is
+        # a module, you have to run it with -m, but if it's a
+        # stand-alone file, you can't use -m and have to call it
+        # directly.
+        if self.packagePath.is_dir():
+            cmd = ["python3", "-m", str(self.packagePath.name)]
+        else:
+            cmd = ["python3", str(self.packagePath.name)]
+
+        if self.arrayMnt is not None:
+            cmd += ['-m', self.arrayMnt]
+
+        self.proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=self.packagePath.parent)
+        self.ready = False
+
+    def waitReady(self, stats=None):
+        """Optional block until the function is ready. This is mostly just
+        useful for profiling since send() is safe to call before the executor
+        is ready."""
+        if self.ready == False:
+            # t_init really only measures from the time you wait for it, not
+            # the true init time (hard to measure that without proper
+            # asynchrony)
+            with util.timer("t_init", stats):
+                readyMsg = self.proc.stdout.readline()
+            if readyMsg != "READY\n":
+                raise InvocationError("Executor failed to initialize: "+readyMsg)
+        self.ready = True
+
+
+    def send(self, msg, stats=None):
+        msgId = self.nextId
+        self.nextId += 1
+
+        with util.timer('t_requestEncode', stats):
+            jMsg = json.dumps(msg) + "\n"
+
+        self.proc.stdin.write(jMsg)
+        self.proc.stdin.flush()
+
+        return msgId
+
+
+    def recv(self, reqId, stats=None):
+        """Recieve the response for the request with ID reqId. Users may only
+        recv each ID exactly once."""
+        if not self.ready:
+            self.waitReady(stats=stats)
+
+        while self.lastResp < reqId:
+            self.lastResp += 1
+            self.resps[self.lastResp] = self.proc.stdout.readline()
+
+        with util.timer('t_responseDecode', stats):
+            try:
+                resp = json.loads(self.resps[reqId])
+            except:
+                raise InvocationError(rawResp)
+
+        if resp['error'] is not None:
+            raise InvocationError(resp['error'])
+
+        if stats is not None:
+            stats.mod('worker').merge(resp['stats'])
+
+        return resp['resp']
+
+
+    def destroy(self):
+        self.proc.stdin.close()
+        self.proc.wait()
+
+
+class _processPool():
+    def __init__(self):
+        # packagePath -> [ _processExecutor ]
+        self.execs = {}
+
+    #XXX deal with arrayMnt
+    def getExecutor(self, packagePath, arrayMnt=None):
+        # For now there's only ever one executor per package. This will change eventually.
+        if packagePath not in self.execs:
+            self.execs[packagePath] = [ _processExecutor(packagePath, arrayMnt=arrayMnt) ]
+
+        pkgPool = self.execs[packagePath]
+        return pkgPool[0]
+
+    def destroy(self):
+        for ex in self.execs.values():
+            ex.destroy()
+
+        self.execs = {}
+
+
 class ProcessRemoteFuncFuture():
-    def __init__(self, reqID, func):
+    def __init__(self, reqID, proc, stats=None):
         self.reqID = reqID
-        self.func = func
+        self.proc = proc
+        self.stats = stats
 
     def get(self):
-        return self.func._awaitResp(self.reqID)
+        with util.timer('t_futureWait', self.stats):
+            resp = self.proc.recv(self.reqID, stats=self.stats)
+        return resp
 
 
+def DestroyFuncs():
+    """Creating a RemoteFunction may introduce global state, this function
+    resets that state to the extent possilbe. Note that true cleaning may not
+    be possible in all cases, the only way to completely reset state is to
+    restart the process."""
+    _processExecutors.destroy()
+
+
+# This is a lazy way of caching backend processes for ProcessRemoteFunc
+# A major limitation at the moment is that you can't have multiple interleaved
+# ProcessRemoteFunc objects. Once you create a new processRemoteFunc object,
+# you must not use any older ones for the same package. Obviously this isn't
+# ideal, I'll fix it once we need concurrency.
 _runningFuncProcesses = {}
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context, stats=None):
@@ -164,81 +289,18 @@ class ProcessRemoteFunc(RemoteFunc):
         self.ctx = context
 
 
-    def _getProc(self):
-        """Returns a Popen object suitable for executing this remote function"""
-        if self.ctx.array is not None:
-            arrayMnt = self.ctx.array.FileMount
-        else:
-            arrayMnt = ""
-
-        if self.packagePath in _runningFuncProcesses:
-            proc = _runningFuncProcesses[self.packagePath]
-        else:
-            # Python's package management is garbage, if the worker is
-            # a module, you have to run it with -m, but if it's a
-            # stand-alone file, you can't use -m and have to call it
-            # directly.
-            if self.packagePath.is_dir():
-                cmd = ["python3", "-m", str(self.packagePath.name)]
-            else:
-                cmd = ["python3", str(self.packagePath.name)]
-
-            if self.ctx.array is not None:
-                arrayMnt = self.ctx.array.FileMount
-                cmd += ['-m', arrayMnt]
-
-            proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=self.packagePath.parent)
-
-            _runningFuncProcesses[self.packagePath] = proc
-
-        return proc
-
-
     def InvokeAsync(self, arg):
-        proc = self._getProc()
+        proc = _processExecutors.getExecutor(self.packagePath)
 
         req = { "command" : "invoke",
                 "stats" : util.profCollection(),
                 "fName" : self.fname,
                 "fArg" : arg }
 
-        # For some reason this masks some errors (e.g. failed Redis connection). I can't figure out why.
-        # if self.proc.poll() is None:
-        #     out, err = self.proc.communicate()
-        #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
+        msgId = proc.send(req, stats=self.stats)
 
-        with util.timer('t_requestEncode', self.stats):
-            proc.stdin.write(json.dumps(req) + "\n")
-            proc.stdin.flush()
-
-        fut = ProcessRemoteFuncFuture(self.nextID, self)
-        self.nextID += 1
+        fut = ProcessRemoteFuncFuture(msgId, proc, self.stats)
         return fut
-
-
-    def _awaitResp(self, reqID):
-        """Wait until request 'reqID' has been processed and return its response"""
-        proc = self._getProc()
-        while self.lastCompleted < reqID:
-            self.lastCompleted += 1
-            self.completedReqs[self.lastCompleted] = proc.stdout.readline()
-
-        # Decoding is deferred until future await to make errors more clear
-        rawResp = self.completedReqs.pop(reqID)
-        with util.timer('t_responseDecode', self.stats):
-            try:
-                resp = json.loads(rawResp)
-            except:
-                raise InvocationError(rawResp)
-        
-        if resp['error'] is not None:
-            raise InvocationError(resp['error'])
-
-
-        if self.stats is not None:
-            self.stats.mod('worker').merge(resp['stats'])
-
-        return resp['resp']
 
 
     def Invoke(self, arg):
@@ -260,10 +322,9 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def Close(self):
-        proc = self._getProc()
-        del _runningFuncProcesses[self.packagePath]
-        proc.stdin.close()
-        proc.wait()
+        # State is global now, so there's nothing to clean, might even remove
+        # this function completely...
+        pass
 
 
 def _remoteServerRespond(msg):
@@ -292,6 +353,8 @@ def RemoteProcessServer(funcs, serverArgs):
     objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
     ctx = RemoteCtx(arrStore, objStore)
 
+    print("READY", flush=True)
+
     for rawReq in sys.stdin:
         try:
             req = json.loads(rawReq)
@@ -318,3 +381,8 @@ def RemoteProcessServer(funcs, serverArgs):
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             _remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})
+
+# ==============================================================================
+# Global Init
+# ==============================================================================
+_processExecutors = _processPool()

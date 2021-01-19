@@ -14,11 +14,24 @@ class ChainedMults():
         self.ffCtx = ffCtx
         self.name = name
         self.preprocessTime = preprocessTime
-        self.stats = stats
+
+        # It's a mess to try and have no stats (too many Nonetype issues) and I
+        # don't think the overheads are all that bad. It's just easier to
+        # collect them even if the user doesn't care.
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats
+
         self.kvStats = self.stats.mod('kv')
 
         # List of keys we are responsible for destroying
         self.ownedKeys = []
+
+        if self.stats is not None:
+            self.kvStats = self.stats.mod('kv')
+        else:
+            self.kvStats = None
 
         if mode == 'direct':
             self.remFunc = ff.invoke.DirectRemoteFunc(workerPath, 'sgemm', self.ffCtx,
@@ -88,7 +101,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, mode='direct', rng=None, useCuda=True, stats=None):
+    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, preprocessInline=True, mode='direct', rng=None, useCuda=True, stats=None):
         """A general driver for the sgemm benchmark.
             - preprocessTime: amount of time to spend preprocessing on a
               host-only function, None skips the preprocess step entirely.
@@ -100,10 +113,19 @@ class benchClient():
         self.name = name
         self.rng = rng
         self.nbytes = sizeFromSideLen(depth, sideLen)
-        self.stats = stats 
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats 
         self.kvStats = self.stats.mod('kv')
+
         self.ffCtx = ffCtx
         self.preTime = preprocessTime
+
+        if self.preTime is not None:
+            self.preInline = preprocessInline
+        else:
+            self.preInline = True
 
         # Keys that we are responsible for deleting
         self.ownedKeys = []
@@ -114,35 +136,40 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, preprocessTime=self.preTime, stats=self.stats)
+        if self.preInline:
+            self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda,
+                    preprocessTime=self.preTime, stats=self.stats)
+        else:
+            self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, stats=self.stats)
 
-        if self.preTime is not None:
+        if not self.preInline and self.preTime is not None:
             if mode == 'direct':
-                self.preFunc = ff.invoke.DirectRemoteFunc(workerPath, 'preprocess', self.ffCtx)
+                self.preFunc = ff.invoke.DirectRemoteFunc(workerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('prefunc'))
             else:
-                self.preFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'preprocess', self.ffCtx)
+                self.preFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('prefunc'))
 
 
     def invoke(self, inArr):
-        if self.rng is not None:
-            time.sleep(self.rng() / 1000)
+        cleanInput = False
+        if not isinstance(inArr, str):
+            inKey = self.name + "_input"
+            with ff.timer("t_write_input", self.stats):
+                self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
+            cleanInput = True
+        else:
+            inKey = inArr
 
         with ff.timer('t_e2e', self.stats):
-            cleanInput = False
-            if not isinstance(inArr, str):
-                inKey = self.name + "_input"
-                with ff.timer("t_write_input", self.stats):
-                    self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
-                cleanInput = True
-            else:
-                inKey = inArr
+            if not self.preInline:
+                if self.preTime is not None:
+                    self.preFunc.Invoke({'input': inKey, 'processTime' : self.preTime, 'output' : inKey})
 
-            # if self.preTime is not None:
-            #     self.preFunc.Invoke({'input': 
             self.lastRetKey = self.func.invoke(inKey)
 
-            if cleanInput:
-                self.ffCtx.kv.delete(inKey, profile=self.kvStats)
+        if cleanInput:
+            self.ffCtx.kv.delete(inKey, profile=self.kvStats)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
@@ -160,21 +187,28 @@ class benchClient():
             with ff.timer("t_write_input", self.stats):
                 for i,b in enumerate(inBufs):
                     inName = self.name + "_input" + str(i)
-                    self.ffCtx.kv.put(inName, b, profile=self.kvStats)
+                    # Initial input writing not counted against stats, we
+                    # assume the inputs came from somewhere else and were
+                    # magically in the KV store
+                    self.ffCtx.kv.put(inName, b)
                     inNames.append(inName)
             inBufs = inNames
             deleteInputs = True
 
         for i in range(n):
+            if self.rng is not None:
+                time.sleep(self.rng() / 1000)
+
             self.invoke(inBufs[ i % len(inBufs) ])
+
             if fetchResult:
                 self.getResult()
 
-            self.ffCtx.kv.delete(self.lastRetKey, profile=self.kvStats)
+            self.ffCtx.kv.delete(self.lastRetKey)
 
         if deleteInputs:
             for key in inBufs:
-                self.ffCtx.kv.delete(key, profile=self.kvStats)
+                self.ffCtx.kv.delete(key)
 
 
     def getStats(self):
@@ -184,7 +218,7 @@ class benchClient():
 
     def getResult(self):
         with ff.timer("t_read_output", self.stats):
-            raw = getData(self.ffCtx, self.lastRetKey, self.shapes[-1].c)
+            raw = getData(self.ffCtx, self.lastRetKey, self.shapes[-1].c, stats=self.kvStats)
         return raw
 
 

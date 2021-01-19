@@ -70,8 +70,9 @@ _importedFuncPackages = {}
 class DirectRemoteFuncFuture():
     def __init__(self, arg, func):
         self.arg = arg
+        self.func = func
 
-    def get():
+    def get(self):
         return self.func.Invoke(self.arg)
 
 
@@ -89,8 +90,10 @@ class DirectRemoteFunc(RemoteFunc):
         # The profs in ctx are used only for passing to the function,
         # self.stats is for the client-side RemoteFun
         self.ctx = context
-        self.stats = util.profCollection() 
-        self.ctx.profs = self.stats.mod('worker')
+        if stats is None:
+            self.stats = util.profCollection()
+        else:
+            self.stats = stats 
 
         with util.timer("t_init", self.stats):
             if packagePath in _importedFuncPackages:
@@ -120,6 +123,7 @@ class DirectRemoteFunc(RemoteFunc):
             if self.fName not in self.funcs:
                 raise RuntimeError("Function '" + self.fName + "' not registered")
 
+            self.ctx.profs = self.stats.mod('worker')
             return self.funcs[self.fName](arg, self.ctx)
 
 
@@ -155,44 +159,44 @@ class ProcessRemoteFunc(RemoteFunc):
         # Maps completed request IDs to their responses, responses are removed once _awaitResp is called
         self.completedReqs = {}
 
-        # Unfortunately, this doesn't measure the full init time because it is
-        # asynchronous. Creating a ProcessRemoteFunc starts the process but
-        # doesn't wait for it to fully initialize. In the future we may be able
-        # to capture this in invoke by adding a 'ready' signal from the process
-        # that we wait for before invoking (right now stdin just buffers the
-        # input while the process starts up).
-        with util.timer('t_init', self.stats):
-            if context.array is not None:
-                arrayMnt = context.array.FileMount
-            else:
-                arrayMnt = ""
-
-            if packagePath in _runningFuncProcesses:
-                self.proc = _runningFuncProcesses[packagePath]
-            else:
-                # Python's package management is garbage, if the worker is
-                # a module, you have to run it with -m, but if it's a
-                # stand-alone file, you can't use -m and have to call it
-                # directly.
-                if packagePath.is_dir():
-                    cmd = ["python3", "-m", str(packagePath.name)]
-                else:
-                    cmd = ["python3", str(packagePath.name)]
-
-                if context.array is not None:
-                    arrayMnt = context.array.FileMount
-                    cmd += ['-m', arrayMnt]
-
-                self.proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=packagePath.parent)
-
-                _runningFuncProcesses[packagePath] = self.proc
-
         self.fname = funcName
         self.packagePath = packagePath
         self.ctx = context
 
 
+    def _getProc(self):
+        """Returns a Popen object suitable for executing this remote function"""
+        if self.ctx.array is not None:
+            arrayMnt = self.ctx.array.FileMount
+        else:
+            arrayMnt = ""
+
+        if self.packagePath in _runningFuncProcesses:
+            proc = _runningFuncProcesses[self.packagePath]
+        else:
+            # Python's package management is garbage, if the worker is
+            # a module, you have to run it with -m, but if it's a
+            # stand-alone file, you can't use -m and have to call it
+            # directly.
+            if self.packagePath.is_dir():
+                cmd = ["python3", "-m", str(self.packagePath.name)]
+            else:
+                cmd = ["python3", str(self.packagePath.name)]
+
+            if self.ctx.array is not None:
+                arrayMnt = self.ctx.array.FileMount
+                cmd += ['-m', arrayMnt]
+
+            proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=self.packagePath.parent)
+
+            _runningFuncProcesses[self.packagePath] = proc
+
+        return proc
+
+
     def InvokeAsync(self, arg):
+        proc = self._getProc()
+
         req = { "command" : "invoke",
                 "stats" : util.profCollection(),
                 "fName" : self.fname,
@@ -204,8 +208,8 @@ class ProcessRemoteFunc(RemoteFunc):
         #     raise InvocationError("Function process exited unexpectedly: stdout\n" + str(out) + "\nstderr:\n" + str(err))
 
         with util.timer('t_requestEncode', self.stats):
-            self.proc.stdin.write(json.dumps(req) + "\n")
-            self.proc.stdin.flush()
+            proc.stdin.write(json.dumps(req) + "\n")
+            proc.stdin.flush()
 
         fut = ProcessRemoteFuncFuture(self.nextID, self)
         self.nextID += 1
@@ -214,9 +218,10 @@ class ProcessRemoteFunc(RemoteFunc):
 
     def _awaitResp(self, reqID):
         """Wait until request 'reqID' has been processed and return its response"""
+        proc = self._getProc()
         while self.lastCompleted < reqID:
             self.lastCompleted += 1
-            self.completedReqs[self.lastCompleted] = self.proc.stdout.readline()
+            self.completedReqs[self.lastCompleted] = proc.stdout.readline()
 
         # Decoding is deferred until future await to make errors more clear
         rawResp = self.completedReqs.pop(reqID)
@@ -230,7 +235,9 @@ class ProcessRemoteFunc(RemoteFunc):
             raise InvocationError(resp['error'])
 
 
-        self.stats.mod('worker').merge(resp['stats'])
+        if self.stats is not None:
+            self.stats.mod('worker').merge(resp['stats'])
+
         return resp['resp']
 
 
@@ -242,17 +249,21 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def Stats(self, reset=False):
-        report = self.stats.report()
-        if reset:
-            self.stats.reset()
+        if self.stats is None:
+            return {}
+        else:
+            report = self.stats.report()
+            if reset:
+                self.stats.reset()
 
-        return report 
+            return report 
 
 
     def Close(self):
+        proc = self._getProc()
         del _runningFuncProcesses[self.packagePath]
-        self.proc.stdin.close()
-        self.proc.wait()
+        proc.stdin.close()
+        proc.wait()
 
 
 def _remoteServerRespond(msg):

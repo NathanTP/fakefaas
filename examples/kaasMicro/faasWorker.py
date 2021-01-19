@@ -54,7 +54,7 @@ def sgemm(req, ctx):
 
         bArrs = []
         for bKey, shape in zip(req['bArrs'], shapes):
-            bArrs.append(pygemm.getData(ctx, bKey, shape.b)) 
+            bArrs.append(pygemm.getData(ctx, bKey, shape.b, stats=ctx.profs.mod('kv'))) 
 
         reqState.func = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'], stats=ctx.profs)
         ctx.scratch = reqState
@@ -69,7 +69,7 @@ def sgemm(req, ctx):
     if 'preprocess' in req:
         time.sleep(req['preprocess'] / 1000)
 
-    inArr = pygemm.getData(ctx, req['input'], shapes[0].a)
+    inArr = pygemm.getData(ctx, req['input'], shapes[0].a, stats=ctx.profs.mod('kv'))
 
     outArr = ctx.scratch.func.invoke(inArr)
 

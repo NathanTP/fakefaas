@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import pathlib
 import math
 from pprint import pprint
@@ -45,13 +46,9 @@ def writeStats(stats, path: pathlib.Path):
         with open(path, 'r') as f:
             allStats = json.load(f)
     else:
-        allStats = {}
+        allStats = []
 
-    expName = stats['name']
-    if expName in allStats:
-        allStats[expName].append(stats)
-    else:
-        allStats[expName] = [stats]
+    allStats.append(stats)
 
     with open(path, 'w') as f:
         json.dump(allStats, f, indent=2)
@@ -87,15 +84,19 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None,
     else:
         outPath = pathlib.Path('.').resolve() / name + ".json"
 
+    # Probably not a useful metric, plus it's not really accounted for properly
+    # in the profiling anyway
+    fetchResult = False
+
     # Cold Start
-    client.invokeN(1)
+    client.invokeN(1, fetchResult=fetchResult)
     coldStats = cleanStats(topProfs.report(), configDict)
     coldStats['warm'] = False
     writeStats(coldStats, outPath)
     topProfs.reset()
 
     # Warm Start
-    client.invokeN(nrepeat, fetchResult=True)
+    client.invokeN(nrepeat, fetchResult=fetchResult)
     warmStats = cleanStats(topProfs.report(), configDict)
     warmStats['warm'] = True
     writeStats(warmStats, outPath)
@@ -129,15 +130,18 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--niter", type=int, default=5, help="Number of experiment iterations to run for the warm results")
     parser.add_argument("-p", "--preprocess", default=None,
             help="Preprocessing time. This may be either a number of ms of preprocessing time to simulate or 'high'/'low' to use a preconfigured time as a fraction of problem size. If not specified, no preprocessing will be simulated.")
+    parser.add_argument("--output", default='results.json', help="File name to write results to")
 
     args = parser.parse_args()
 
-    if args.preprocess.isdigit():
+    if args.preprocess is None:
+        preproc = None
+    elif args.preprocess.isdigit():
         preproc = int(args.preprocess)
 
     if args.size == 'small': 
         size = 1024
-        if not args.preprocess.isdigit():
+        if args.preprocess is not None and not args.preprocess.isdigit():
             # XXX ideally we'd actually calculate this somehow, but for now it's just hard-coded
             if args.preprocess == 'high':
                 # roughly 2x the model runtime
@@ -147,7 +151,7 @@ if __name__ == "__main__":
                 preproc = 20
     else:
         size = 1024*8
-        if not args.preprocess.isdigit():
+        if args.preprocess is not None and not args.preprocess.isdigit():
             if args.preprocess == 'high':
                 # roughly 2x the model runtime
                 preproc = 76000
@@ -155,17 +159,12 @@ if __name__ == "__main__":
                 # roughly 25% of the model runtime
                 preproc = 9500
 
-
-    # Each worker may collect different statistics and therefor must use a different CSV output
-    # outPath = args.worker+".csv"
-    outPath = 'results.json'
-
     if args.mode == 'process':
         redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
 
     try:
         benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter,
-                args.worker, outPath=outPath,
+                args.worker, outPath=args.output,
                 preprocessTime=preproc)
     except redis.exceptions.ConnectionError as e:
         print("Redis error:")

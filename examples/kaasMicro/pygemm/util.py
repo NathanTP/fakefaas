@@ -69,8 +69,8 @@ def generateArr(shape):
     return arr
 
 
-def getData(ffCtx, name, shape):
-    raw = ffCtx.kv.get(name)
+def getData(ffCtx, name, shape, stats=None):
+    raw = ffCtx.kv.get(name, profile=stats)
     arr = np.frombuffer(raw, dtype=np.float32)
     if colMajor:
         arr = arr.reshape(shape[0], shape[1], order="F")

@@ -95,13 +95,14 @@ def testChained(mode, clientType):
 def testClient(mode, clientType):
     libffCtx = pygemm.getCtx(remote=(mode == 'process'))
 
+    stats = libff.profCollection()
     if clientType == 'faas':
-        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode)
+        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
     elif clientType == 'kaas':
         kaasHandle = kaasServer.getHandle(mode, libffCtx)
-        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle)
+        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle, stats=stats)
     else:
-        client = pygemm.local.benchClient("benchClientTest", 4, 1024, libffCtx)
+        client = pygemm.local.benchClient("benchClientTest", 4, 1024, ffCtx=libffCtx, stats=stats)
 
     # benchclients manage most of the experiment themselves so we can't really
     # verify correctness (we trust testChained to do that). But we will make
@@ -110,6 +111,8 @@ def testClient(mode, clientType):
     inArr = pygemm.generateArr(client.shapes[0].a)
     client.invoke(inArr)
     testOut = client.getResult()
+    
+    stats.reset()
 
     start = time.time()
     client.invokeN(2)
@@ -118,7 +121,7 @@ def testClient(mode, clientType):
     stats = client.getStats()
     client.destroy()
     
-    reported = stats['LocalStats']['t_client_invoke']
+    reported = stats['t_invoke']
     measured = (tInvoke / 2)*1000
     if (measured / reported) < 0.5:
         print("FAIL")
@@ -168,7 +171,7 @@ if __name__ == "__main__":
     clientTypes = ['kaas', 'faas', 'local']
     modes = ['direct', 'process']
 
-    # mode = 'direct'
+    # mode = 'process'
     # clientType = 'faas'
     # benchName = "_".join(["chained", mode, clientType])
     # with testenv(benchName, mode, clientType):

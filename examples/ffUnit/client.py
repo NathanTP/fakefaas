@@ -121,8 +121,8 @@ if __name__ == "__main__":
 
     # helloWorld()
 
-    # if not testAsync():
-    #     sys.exit(1)
+    if not testAsync():
+        sys.exit(1)
 
     if not testState('process'):
         sys.exit(1)

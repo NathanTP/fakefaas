@@ -2,7 +2,7 @@ import kaasServer
 
 from .util import *
 
-faasWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
+preWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasHandlers" / "preWorker.py"
 
 class mmFunc():
     def _bufArgToBuf(self, arg, bname, shape, const=False):
@@ -165,10 +165,10 @@ class ChainedMults():
 
         if self.preTime is not None:
             if isinstance(kaasHandle, libff.invoke.DirectRemoteFunc):
-                self.preFunc = libff.invoke.DirectRemoteFunc(faasWorkerPath, 'preprocess',
+                self.preFunc = libff.invoke.DirectRemoteFunc(preWorkerPath, 'preprocess',
                         self.ffCtx, stats=self.stats.mod('prefunc'))
             else:
-                self.preFunc = libff.invoke.ProcessRemoteFunc(faasWorkerPath, 'preprocess',
+                self.preFunc = libff.invoke.ProcessRemoteFunc(preWorkerPath, 'preprocess',
                         self.ffCtx, stats=self.stats.mod('prefunc'))
 
     def destroy(self):

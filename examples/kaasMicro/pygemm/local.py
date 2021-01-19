@@ -270,7 +270,8 @@ class benchClient():
         store. You can get the output of the last invocation with
         benchClient.getResult()."""
         with ff.timer('t_e2e', self.stats):
-            time.sleep(self.preprocessSeconds)
+            with ff.timer('t_preprocess', self.stats):
+                time.sleep(self.preprocessSeconds)
 
             self.lastRet = self.func.invoke(inArr)
 

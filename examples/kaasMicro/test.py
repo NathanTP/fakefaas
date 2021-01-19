@@ -121,6 +121,7 @@ def testClient(mode, clientType):
     stats = client.getStats()
     client.destroy()
     
+    
     reported = stats['t_invoke']
     measured = (tInvoke / 2)*1000
     if (measured / reported) < 0.5:
@@ -131,24 +132,6 @@ def testClient(mode, clientType):
     else:
         print("PASS")
 
-    # s = kaasHandle.Stats()
-    #
-    # timeMetricsTotal = 0
-    # for k,v in s['WorkerStats'].items():
-    #     if k[:2] == 't_':
-    #         timeMetricsTotal += v
-    # print("Total Time: ", s['LocalStats']['t_libff_invoke'])
-    # print("Time Metrics Total: ", timeMetricsTotal)
-    # print("Missing Time: ", s['LocalStats']['t_libff_invoke'] - timeMetricsTotal)
-    # pprint(s)
-
-    # clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
-    # clientPoisson.invokeN(5, inArrs=5)
-    # clientPoisson.destroy()
-    #
-    # clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
-    # clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
-    # clientZipf.destroy()
 
 @contextmanager
 def testenv(testName, mode, clientType):
@@ -166,25 +149,27 @@ def testenv(testName, mode, clientType):
     if mode == 'process':
         redisProc.terminate()
 
+    # Resets most of the state internal to libff.invoke (at least for process
+    # mode, direct mode can't really clean up the packages unfortunately
+    ff.invoke.DestroyFuncs()
 
 if __name__ == "__main__":
     clientTypes = ['kaas', 'faas', 'local']
     modes = ['direct', 'process']
 
     # mode = 'process'
-    # clientType = 'faas'
+    # clientType = 'kaas'
     # benchName = "_".join(["chained", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testChained(mode, clientType)
     #     print("PASS")
     #     time.sleep(0.5)
-
+    #
     # benchName = "_".join(["client", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testClient(mode, clientType)
-    #     # testChained(mode, clientType)
     # sys.exit() 
 
     for (mode, clientType) in itertools.product(modes, clientTypes):

@@ -2,11 +2,8 @@ import sys
 import time
 import libff as ff
 
+sys.path.append("../")
 import pygemm
-
-#XXX
-# Cache between calls
-# gemmFunc = None
 
 
 class sgemmState():
@@ -67,7 +64,8 @@ def sgemm(req, ctx):
     # omit preprocess in this req and instead directly invoke the preprocess()
     # function in this file to simulate two separate invocations.
     if 'preprocess' in req:
-        time.sleep(req['preprocess'] / 1000)
+        with ff.timer('t_preprocess', ctx.profs):
+            time.sleep(req['preprocess'] / 1000)
 
     inArr = pygemm.getData(ctx, req['input'], shapes[0].a, stats=ctx.profs.mod('kv'))
 
@@ -78,14 +76,7 @@ def sgemm(req, ctx):
     return {}
 
 
-def preprocess(req, ctx):
-    """Simulate a preprocessing phase that precedes sgemm."""
-    inp = ctx.kv.get(req['input'], profile=ctx.profs.mod('kv'))
-    time.sleep(req['processTime'] / 1000)
-    ctx.kv.put(req['output'], inp, profile=ctx.profs.mod('kv'))
-
-
-funcMap = {'sgemm' : sgemm, 'preprocess' : preprocess}
+funcMap = {'sgemm' : sgemm}
 def LibffInvokeRegister():
     return funcMap 
 

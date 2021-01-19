@@ -242,8 +242,9 @@ class _processPool():
         return pkgPool[0]
 
     def destroy(self):
-        for ex in self.execs.values():
-            ex.destroy()
+        for exList in self.execs.values():
+            for ex in exList:
+                ex.destroy()
 
         self.execs = {}
 

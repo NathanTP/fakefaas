@@ -75,7 +75,7 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None,
         client = pygemm.local.benchClient('benchmark-'+ mode, depth, size,
                 preprocessTime=preprocessTime, useCuda=True, stats=topProfs.mod('client'))
 
-    configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat, 't_preprocess' : preprocessTime,
+    configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat, 't_preprocess_configured' : preprocessTime,
             'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size),
             'client' : clientType, 'date' : datetime.now().isoformat()}
 
@@ -101,16 +101,6 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None,
     warmStats['warm'] = True
     writeStats(warmStats, outPath)
     topProfs.reset()
-
-    # newFile = not outPath.exists()
-    # with open(outPath, 'a') as csvF:
-    #     writer = csv.DictWriter(csvF, fieldnames=warmStats.keys())
-    #
-    #     if newFile:
-    #         writer.writeheader()
-    #
-    #     writer.writerow(warmStats)
-    #     writer.writerow(coldStats)
 
 
 if __name__ == "__main__":

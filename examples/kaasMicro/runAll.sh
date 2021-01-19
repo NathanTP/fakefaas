@@ -3,12 +3,12 @@ set -e
 
 echo "RAPID TESTING ONLY"
 rm -f test.json
-# python benchmark.py -w "local" -s "small" -m "direct" -p 'low' -n 1 --output test.json
-# python benchmark.py -w "local" -s "small" -m "process" -p 'low' -n 1 --output test.json
-# python benchmark.py -w "kaas" -s "small" -m "direct" -p 'low' -n 1 --output test.json
-# python benchmark.py -w "kaas" -s "small" -m "process" -p 'low' -n 1 --output test.json
-# python benchmark.py -w "faas" -s "small" -m "direct" -p 'low' -n 1 --output test.json
-# python benchmark.py -w "faas" -s "small" -m "process" -p 'low' -n 1 --output test.json
+python benchmark.py -w "local" -s "small" -m "direct" -p 'low' -n 1 --output test.json
+python benchmark.py -w "local" -s "small" -m "process" -p 'low' -n 1 --output test.json
+python benchmark.py -w "kaas" -s "small" -m "direct" -p 'low' -n 1 --output test.json
+python benchmark.py -w "kaas" -s "small" -m "process" -p 'low' -n 1 --output test.json
+python benchmark.py -w "faas" -s "small" -m "direct" -p 'low' -n 1 --output test.json
+python benchmark.py -w "faas" -s "small" -m "process" -p 'low' -n 1 --output test.json
 
 python benchmark.py -w "local" -s "small" -m "direct" -n 1 --output test.json
 python benchmark.py -w "local" -s "small" -m "process" -n 1 --output test.json

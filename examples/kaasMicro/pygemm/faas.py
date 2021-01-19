@@ -5,7 +5,8 @@ from libff import kv, invoke
 
 from .util import *
 
-workerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
+kernWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasHandlers" / "kernWorker.py"
+preWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasHandlers" / "preWorker.py"
 
 class ChainedMults():
     def __init__(self, name, shapes, ffCtx, mode='direct', preprocessTime=None, bArrs=None, useCuda=True, stats=None):
@@ -34,10 +35,10 @@ class ChainedMults():
             self.kvStats = None
 
         if mode == 'direct':
-            self.remFunc = ff.invoke.DirectRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+            self.remFunc = ff.invoke.DirectRemoteFunc(kernWorkerPath, 'sgemm', self.ffCtx,
                     stats=self.stats.mod('remfunc'))
         else:
-            self.remFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+            self.remFunc = ff.invoke.ProcessRemoteFunc(kernWorkerPath, 'sgemm', self.ffCtx,
                     stats=self.stats.mod('remfunc'))
 
         self.bArrs = []
@@ -101,7 +102,7 @@ class ChainedMults():
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, preprocessInline=True, mode='direct', rng=None, useCuda=True, stats=None):
+    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, preprocessInline=False, mode='direct', rng=None, useCuda=True, stats=None):
         """A general driver for the sgemm benchmark.
             - preprocessTime: amount of time to spend preprocessing on a
               host-only function, None skips the preprocess step entirely.
@@ -144,10 +145,10 @@ class benchClient():
 
         if not self.preInline and self.preTime is not None:
             if mode == 'direct':
-                self.preFunc = ff.invoke.DirectRemoteFunc(workerPath, 'preprocess',
+                self.preFunc = ff.invoke.DirectRemoteFunc(preWorkerPath, 'preprocess',
                         self.ffCtx, stats=self.stats.mod('prefunc'))
             else:
-                self.preFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'preprocess',
+                self.preFunc = ff.invoke.ProcessRemoteFunc(preWorkerPath, 'preprocess',
                         self.ffCtx, stats=self.stats.mod('prefunc'))
 
 
@@ -164,7 +165,8 @@ class benchClient():
         with ff.timer('t_e2e', self.stats):
             if not self.preInline:
                 if self.preTime is not None:
-                    self.preFunc.Invoke({'input': inKey, 'processTime' : self.preTime, 'output' : inKey})
+                    with ff.timer("t_preprocess", self.stats):
+                        self.preFunc.Invoke({'input': inKey, 'processTime' : self.preTime, 'output' : inKey})
 
             self.lastRetKey = self.func.invoke(inKey)
 

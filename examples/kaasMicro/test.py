@@ -99,8 +99,7 @@ def testClient(mode, clientType):
     if clientType == 'faas':
         client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
     elif clientType == 'kaas':
-        kaasHandle = kaasServer.getHandle(mode, libffCtx)
-        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle, stats=stats)
+        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
     else:
         client = pygemm.local.benchClient("benchClientTest", 4, 1024, ffCtx=libffCtx, stats=stats)
 
@@ -112,15 +111,14 @@ def testClient(mode, clientType):
     client.invoke(inArr)
     testOut = client.getResult()
     
-    stats.reset()
+    client.resetStats()
 
     start = time.time()
     client.invokeN(2)
     tInvoke = time.time() - start 
 
-    stats = client.getStats()
+    stats = client.getStats().report()
     client.destroy()
-    
     
     reported = stats['t_invoke']
     measured = (tInvoke / 2)*1000
@@ -148,6 +146,8 @@ def testenv(testName, mode, clientType):
 
     if mode == 'process':
         redisProc.terminate()
+        # It takes a while for redis to release the port after exiting
+        time.sleep(0.5)
 
     # Resets most of the state internal to libff.invoke (at least for process
     # mode, direct mode can't really clean up the packages unfortunately
@@ -157,14 +157,13 @@ if __name__ == "__main__":
     clientTypes = ['kaas', 'faas', 'local']
     modes = ['direct', 'process']
 
-    # mode = 'process'
-    # clientType = 'kaas'
+    # mode = 'direct'
+    # clientType = 'local'
     # benchName = "_".join(["chained", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testChained(mode, clientType)
     #     print("PASS")
-    #     time.sleep(0.5)
     #
     # benchName = "_".join(["client", mode, clientType])
     # with testenv(benchName, mode, clientType):
@@ -177,12 +176,8 @@ if __name__ == "__main__":
         with testenv(benchName, mode, clientType):
             print(benchName)
             testChained(mode, clientType)
-            # The OS takes a little bit to clean up the port reservation, gotta
-            # wait before restarting redis
-            time.sleep(0.5)
 
         benchName = "_".join(["client", mode, clientType])
         with testenv(benchName, mode, clientType):
             print(benchName)
             testClient(mode, clientType)
-            time.sleep(0.5)

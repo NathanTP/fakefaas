@@ -95,6 +95,20 @@ class ChainedMults():
         return outKey
 
 
+    def getStats(self):
+        """Update the stats object passed at initialization with any
+        outstanding statistics and return it. getStats() is idempotent."""
+        # Everything in chainedmults updates self.stats directly, no need to
+        # update that beyond the remfunc
+        self.remFunc.getStats()
+        return self.stats
+
+
+    def resetStats(self):
+        self.remFunc.resetStats()
+        self.stats.reset()
+
+
     def destroy(self):
         for key in self.ownedKeys:
             self.ffCtx.kv.delete(key, profile=self.kvStats)
@@ -214,8 +228,17 @@ class benchClient():
 
 
     def getStats(self):
-        report = self.stats.report()
-        return report 
+        self.func.getStats()
+        if self.preTime is not None and not self.preInline:
+            self.preFunc.getStats()
+        return self.stats
+
+
+    def resetStats(self):
+        self.func.resetStats()
+        if self.preTime is not None and not self.preInline:
+            self.preFunc.resetStats()
+        self.stats.reset()
 
 
     def getResult(self):

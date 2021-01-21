@@ -22,7 +22,7 @@ class mmFunc():
         return buf
 
 
-    def __init__(self, name, shape, libffCtx, kaasHandle, constB=None, stats=None):
+    def __init__(self, name, shape, libffCtx, kaasCtx, constB=None, stats=None):
         """Create a matmul function invoker. Shape should be the two matrix
         dimensions [(arows, acols), (brows, bcols)].
         
@@ -31,7 +31,7 @@ class mmFunc():
         one."""
         self.name = name
         self.ffCtx = libffCtx
-        self.kHandle = kaasHandle
+        self.kHandle = kaasCtx 
         if stats is None:
             self.stats = ff.profCollection()
         else:
@@ -212,13 +212,25 @@ class ChainedMults():
         return outBuf.name
 
 
+    def getStats(self):
+        if self.preTime is not None:
+            self.preFunc.getStats()
+        return self.stats
+
+    
+    def resetStats(self):
+        if self.preTime is not None:
+            self.preFunc.resetStats()
+        self.stats.reset()
+
+
     def destroy(self):
         for func in self.funcs:
             func.destroy()
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, kaasCtx, preprocessTime=None, rng=None, stats=None):
+    def __init__(self, name, depth, sideLen, ffCtx, mode='direct', preprocessTime=None, rng=None, stats=None):
         """Run a single benchmark client making mm requests. Depth is how many
         matmuls to chain together in a single call. sideLen is the number of
         elements in one side of an array (benchClient works only with square
@@ -242,7 +254,6 @@ class benchClient():
               including any data movement, pre/post processing, and the model itself.
         """
         self.ff = ffCtx
-        self.kaas = kaasCtx
         self.lastRetKey = None
         self.rng = rng
         self.name = name
@@ -252,6 +263,8 @@ class benchClient():
         else:
             self.stats = stats
         self.kvStats = self.stats.mod('kv')
+
+        self.kaas = kaasServer.getHandle(mode, self.ff, stats=self.stats.mod('kaas'))
 
         # Used to name any generated arrays
         self.nextArrayID = 0
@@ -264,7 +277,8 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas, preprocessTime=preprocessTime, stats=stats)
+        self.func = ChainedMults(name, self.shapes, self.ff, self.kaas,
+                preprocessTime=preprocessTime, stats=stats)
 
 
     def invoke(self, inArr):
@@ -334,11 +348,16 @@ class benchClient():
                 self.ff.kv.delete(key)
 
 
-    def getStats(self, reset=False):
-        myStats = self.stats.report()
-        if reset:
-            self.stats = ff.profCollection()
-        return {**self.kaas.Stats(reset=reset), **myStats}
+    def getStats(self):
+        self.kaas.getStats()
+        self.func.getStats()
+        return self.stats
+
+
+    def resetStats(self):
+        self.kaas.resetStats()
+        self.func.resetStats()
+        self.stats.reset()
 
 
     def getResult(self):

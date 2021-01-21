@@ -1,5 +1,7 @@
 import pathlib
 import time
+import sys
+from pprint import pprint
 
 import libff
 from libff import kv, array, invoke
@@ -47,36 +49,88 @@ def testState(mode):
     return True
 
 
-def stats():
+def _checkStats(stats, measured, expect):
+    reported = stats['worker:runtime']
+    if reported < expect or measured < expect:
+        print("FAIL: runtime too fast")
+        return False
+    elif reported > 2*expect or measured > 2*expect:
+        print("FAIL: runtime too slow")
+    else:
+        return True
+
+
+def _runStatsFunc(func, runTime):
+    start = time.time()
+    resp = func.Invoke({"runtime" : runTime})
+    measured = (time.time() - start)*1000
+    stats = func.getStats().report()
+
+    return (stats, measured)
+
+def stats(mode='direct'):
+    sleepTime = 1000
     repeat = 2
     ctx = libff.invoke.RemoteCtx(None, None)
 
     stats = libff.profCollection()
-    # func = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx)
-    func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats)
+    if mode == 'direct':
+        f1 = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
+        f2 = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
+    else:
+        f1 = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
+        f2 = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
 
-    # Cold Start
-    start = time.time()
-    resp = func.Invoke({"runtime" : 1})
-    coldTime = (time.time() - start)*1000
-    coldStats = func.Stats(reset=True)
+    #==========================================================================
+    # Cold start and single function behavior 
+    #==========================================================================
+    coldStats, coldMeasured = _runStatsFunc(f1, sleepTime)
+    if not _checkStats(coldStats, coldMeasured, sleepTime):
+        print("Cold start ran too fast")
+        print("Direct Stats: " + str(coldMeasured))
+        print("Reported Stats: " + str(coldStats))
+        return False
+    f1.resetStats()
+    stats.reset()
 
-    start = time.time()
+    #==========================================================================
+    # Warm start and multiple function behavior 
+    #==========================================================================
+    # Multiple functions can be warm at the same time and should maintain stats separately
     for i in range(repeat):
-        resp = func.Invoke({"runtime" : 1})
-    runtimeMeasured = ((time.time() - start) / repeat)*1000
+        stat1, measured1 = _runStatsFunc(f1, sleepTime)
+        stat2, measured2 = _runStatsFunc(f2, sleepTime*2)
+        if not _checkStats(stat1, measured1, sleepTime) or not _checkStats(stat2, measured2, sleepTime*2):
+            print("Warm start failed on iteration " + str(i))
+            print("Direct Stats 1: " + str(measured1))
+            print("Reported Stats 1: ")
+            pprint(stat1)
+            print("\nDirect Stats 2: " + str(measured2))
+            print("Reported Stats 2: ")
+            pprint(stat2)
+            return False
+    f1.resetStats()
+    f2.resetStats()
+    stats.reset()
 
-    fail = False
-    if coldStats['worker:runtime'] < 1000 or coldTime < 1000:
-        fail = True
-        print("FAIL: runtime too fast")
+    #==========================================================================
+    # Reset logic
+    #==========================================================================
+    resp = f1.Invoke({"runtime" : sleepTime})
+    resp = f2.Invoke({"runtime" : sleepTime})
+    f1.resetStats()
 
-    if fail:
-        print("Cold Start (direct): " + str(coldTime))
-        print("Cold Start (from func): " + str(coldStats))
-        print("")
-        print("Warm Start (direct): " + str(runtimeMeasured))
-        print("Warm Start (from func): " + str(func.Stats()))
+    # Reset stats should clear everything, even on the worker 
+    stats1 = f1.getStats().report()
+    if len(stats1) != 0:
+        print("Stats were not cleaned")
+        pprint(stats1)
+        return False
+
+    # But not on other functions
+    stats2 = f2.getStats().report()
+    if len(stats2) == 0 or stats2['worker:runtime'] < sleepTime:
+        print("Wrong client stats got reset")
         return False
 
     print("stats: PASS")
@@ -117,13 +171,13 @@ def testAsync():
     return True
 
 if __name__ == "__main__":
-    if not stats():
+    if not stats(mode='direct'):
         sys.exit(1)
 
-    helloWorld()
-
-    if not testAsync():
-        sys.exit(1)
-
-    if not testState('process'):
-        sys.exit(1)
+    # helloWorld()
+    #
+    # if not testAsync():
+    #     sys.exit(1)
+    #
+    # if not testState('process'):
+    #     sys.exit(1)

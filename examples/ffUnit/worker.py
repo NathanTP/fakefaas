@@ -18,7 +18,7 @@ random.seed(time.time())
 def perfSim(req, ctx):
     # You can time stuff
     with libff.timer('runtime', ctx.profs):
-        time.sleep(req['runtime'])
+        time.sleep(req['runtime'] / 1000)
 
     # You can also record non-time stuff using libff.prof() objects
     if 'randSample' not in ctx.profs:

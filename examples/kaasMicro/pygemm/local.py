@@ -91,9 +91,9 @@ class ChainedMults():
     def _checkInitialized(self):
         with ff.timer('t_modelInit', checkLevel(self.stats, 1)): 
             if self.useCuda:
-                with ff.timer("t_kernelLoad", checkLevel(self.stats, 1), final=False):
-                    global cudaLib, gemmFunc
-                    if cudaLib is None:
+                global cudaLib, gemmFunc
+                if cudaLib is None:
+                    with ff.timer("t_kernelLoad", checkLevel(self.stats, 1)):
                         cudaLib = cuda.module_from_file(str(kernsDir / "gemm.cubin"))
                         gemmFunc = cudaLib.get_function("sgemm")
                         gemmFunc.prepare(["P"]*4)
@@ -159,14 +159,15 @@ class ChainedMults():
 
             aBuf = cBufs[i]
         
-        hostC = np.zeros((self.shapes[-1].M, self.shapes[-1].N), dtype=np.float32)
+        with ff.timer('t_zero', self.stats, final=False):
+            hostC = np.zeros((self.shapes[-1].M, self.shapes[-1].N), dtype=np.float32)
 
         updateProf(self.stats, 's_dtoh', hostC.nbytes, 1)
-        with ff.timer("t_dtoh", checkLevel(self.stats, 1)):
+        with ff.timer("t_dtoh", checkLevel(self.stats, 1), final=False):
             cuda.memcpy_dtoh(hostC, cBufs[-1])
 
         # Free temporaries
-        with ff.timer("t_cudaMM", checkLevel(self.stats, 1)):
+        with ff.timer("t_cudaMM", checkLevel(self.stats, 1), final=False):
             inDbuf.free()
             for i in range(len(self.shapes)):
                 cBufs[i].free()
@@ -306,7 +307,11 @@ class benchClient():
 
 
     def getStats(self):
-        return self.stats.report()
+        return self.stats
+
+
+    def resetStats(self):
+        self.stats.reset()
 
 
     def getResult(self):

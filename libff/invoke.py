@@ -6,6 +6,7 @@ import importlib.util
 import argparse
 import jsonpickle as json
 import traceback
+import time
 from . import array
 from . import kv 
 from . import util
@@ -25,7 +26,10 @@ class RemoteFunc(abc.ABC):
     def __init__(self, packagePath, funcName, context, stats=None):
         """Create a remote function from the provided package.funcName.
         arrayMnt should point to wherever child workers should look for
-        arrays."""
+        arrays. Stats is a reference to a libff.profCollection() to be used for
+        any internal statistics. The object will be modified in-place (no
+        copies are made). However, to ensure all updates are finalized, users
+        must call getStats()."""
         pass
     
 
@@ -35,10 +39,22 @@ class RemoteFunc(abc.ABC):
         return the response dictionary from the function."""
         pass
 
-    def Stats(self, reset=False):
-        """Report the statistics collected so far. If reset is True, stats will
-        be cleared."""
+
+    @abc.abstractmethod
+    def getStats(self):
+        """Update the stats object passed during initialization and return a
+        reference to it. You must call this to ensure that all statistics are
+        available, otherwise you may only have partial results. getStats() is
+        idempotent"""
         pass
+
+
+    @abc.abstractmethod
+    def resetStats(self):
+        """Reset any internally managed stats, including the stats object
+        passed at initialization"""
+        pass
+
 
     @abc.abstractmethod
     def Close(self):
@@ -127,12 +143,12 @@ class DirectRemoteFunc(RemoteFunc):
             return self.funcs[self.fName](arg, self.ctx)
 
 
-    def Stats(self, reset=False):
-        report = self.stats.report()
-        if reset:
-            self.stats.reset()
+    def getStats(self):
+        return self.stats
 
-        return report 
+
+    def resetStats(self):
+        self.stats.reset()
 
 
     def Close(self):
@@ -144,6 +160,11 @@ class _processExecutor():
     # persistent stats of their own. Each call has a stats argument that can be
     # filled in by whoever is calling.
     def __init__(self, packagePath, arrayMnt=None):
+        """Represents a handle to a remote process worker. Workers are
+        independent of any particular client. Many fexecutor functions take
+        statistics, these will be updated with internal statistics of the
+        executor object locally, but not the worker. You must manage worker
+        statistics separately (using the 'getStats' command)."""
         self.arrayMnt = arrayMnt
         self.packagePath = packagePath
         # Next id to use for outgoing mesages
@@ -184,22 +205,25 @@ class _processExecutor():
         self.ready = True
 
 
-    def send(self, msg, stats=None):
+    def send(self, msg, clientID, stats=None):
         msgId = self.nextId
         self.nextId += 1
 
+        msg['clientID'] = clientID
         with util.timer('t_requestEncode', stats):
             jMsg = json.dumps(msg) + "\n"
-
-        self.proc.stdin.write(jMsg)
-        self.proc.stdin.flush()
+            self.proc.stdin.write(jMsg)
+            self.proc.stdin.flush()
 
         return msgId
 
 
-    def recv(self, reqId, stats=None):
+    def recv(self, reqId, clientID, stats=None):
         """Recieve the response for the request with ID reqId. Users may only
         recv each ID exactly once."""
+
+        # Client ID is unused for now, the worker just returns responses in FIFO order
+
         if not self.ready:
             self.waitReady(stats=stats)
 
@@ -211,13 +235,10 @@ class _processExecutor():
             try:
                 resp = json.loads(self.resps[reqId])
             except:
-                raise InvocationError(rawResp)
+                raise InvocationError(self.resps[reqId])
 
         if resp['error'] is not None:
             raise InvocationError(resp['error'])
-
-        if stats is not None:
-            stats.mod('worker').merge(resp['stats'])
 
         return resp['resp']
 
@@ -233,8 +254,10 @@ class _processPool():
         self.execs = {}
 
     #XXX deal with arrayMnt
-    def getExecutor(self, packagePath, arrayMnt=None):
+    def getExecutor(self, packagePath, clientID, arrayMnt=None):
         # For now there's only ever one executor per package. This will change eventually.
+        # This implies that clientID is not used yet, it will be needed later.
+
         if packagePath not in self.execs:
             self.execs[packagePath] = [ _processExecutor(packagePath, arrayMnt=arrayMnt) ]
 
@@ -250,14 +273,15 @@ class _processPool():
 
 
 class ProcessRemoteFuncFuture():
-    def __init__(self, reqID, proc, stats=None):
+    def __init__(self, reqID, proc, clientID, stats=None):
         self.reqID = reqID
         self.proc = proc
         self.stats = stats
+        self.clientID = clientID
 
     def get(self):
         with util.timer('t_futureWait', self.stats):
-            resp = self.proc.recv(self.reqID, stats=self.stats)
+            resp = self.proc.recv(self.reqID, self.clientID, stats=self.stats)
         return resp
 
 
@@ -269,15 +293,16 @@ def DestroyFuncs():
     _processExecutors.destroy()
 
 
-# This is a lazy way of caching backend processes for ProcessRemoteFunc
-# A major limitation at the moment is that you can't have multiple interleaved
-# ProcessRemoteFunc objects. Once you create a new processRemoteFunc object,
-# you must not use any older ones for the same package. Obviously this isn't
-# ideal, I'll fix it once we need concurrency.
-_runningFuncProcesses = {}
+# There may be multiple handles for the same function, we need to disambiguate these for various reasons (mostly stats). This global ensures unique ids.
+_processFuncNextID = 0
+
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context, stats=None):
         self.stats = stats
+
+        global _processFuncNextID
+        self.clientID = _processFuncNextID
+        _processFuncNextID += 1
 
         # ID of the next request to make and the last completed request (respectively)
         self.nextID = 0 
@@ -291,16 +316,16 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def InvokeAsync(self, arg):
-        proc = _processExecutors.getExecutor(self.packagePath)
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID)
 
         req = { "command" : "invoke",
                 "stats" : util.profCollection(),
                 "fName" : self.fname,
                 "fArg" : arg }
 
-        msgId = proc.send(req, stats=self.stats)
+        msgId = proc.send(req, self.clientID, stats=self.stats)
 
-        fut = ProcessRemoteFuncFuture(msgId, proc, self.stats)
+        fut = ProcessRemoteFuncFuture(msgId, proc, self.clientID, self.stats)
         return fut
 
 
@@ -311,16 +336,33 @@ class ProcessRemoteFunc(RemoteFunc):
         return resp 
 
 
-    def Stats(self, reset=False):
+    def getStats(self):
+        """Update the stats object passed during initialization and return a
+        reference to it. You must call this to ensure that all statistics are
+        available, otherwise you may only have partial results. getStats() is
+        idempotent"""
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID)
+        statsReq = {
+                'command' : 'reportStats',
+                # We always reset the worker since we now have those stats in
+                # our local stats and don't want to count them twice
+                'reset' : True 
+        }
+        msgID = proc.send(statsReq, self.clientID)
+        workerStats = proc.recv(msgID, self.clientID)
+
         if self.stats is None:
             return {}
         else:
-            report = self.stats.report()
-            if reset:
-                self.stats.reset()
+            self.stats.mod('worker').merge(workerStats)
+            return self.stats
 
-            return report 
 
+    def resetStats(self):
+        # getStats resets everything on the client
+        self.getStats()
+        self.stats.reset()
+        
 
     def Close(self):
         # State is global now, so there's nothing to clean, might even remove
@@ -354,29 +396,44 @@ def RemoteProcessServer(funcs, serverArgs):
     objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
     ctx = RemoteCtx(arrStore, objStore)
 
+    # Global stats are maintained to keep stats reporting off the critical path
+    # (serializing profCollection adds non-trivial overheads)
+    # {clientID -> libff.profCollection()}
+    stats = {}
+
     print("READY", flush=True)
 
     for rawReq in sys.stdin:
+        start = time.time()
         try:
             req = json.loads(rawReq)
         except json.decoder.JSONDecodeError as e:
             err = "Failed to parse command (must be valid JSON): " + str(e)
             _remoteServerRespond({ "error" : err })
             continue
+        decodeTime = time.time() - start
 
         try:
             if req['command'] == 'invoke':
+                if req['clientID'] not in stats:
+                    stats[req['clientID']] = util.profCollection()
+                ctx.profs = stats[req['clientID']]
                 if req['fName'] in funcs:
-                    ctx.profs = req['stats']
                     resp = funcs[req['fName']](req['fArg'], ctx)
                 else:
                     _remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
 
-                _remoteServerRespond({"error" : None, "resp" : resp, 'stats' : ctx.profs})
-
+                ctx.profs['t_requestDecode'].increment(decodeTime*1000)
+                with util.timer('t_responseEncode', ctx.profs):
+                    _remoteServerRespond({"error" : None, "resp" : resp})
             elif req['command'] == 'reportStats':
-                _remoteServerRespond({"error" : None, "stats" : {}})
-
+                if req['clientID'] not in stats:
+                    respStats = util.profCollection()
+                else:
+                    respStats = stats[req['clientID']]
+                _remoteServerRespond({"error" : None, "resp" : respStats})
+                if req['reset']:
+                    stats.pop(req['clientID'], None)
             else:
                 _remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
         except Exception as e:

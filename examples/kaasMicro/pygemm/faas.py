@@ -60,7 +60,8 @@ class ChainedMults():
 
         self.bNames = [ name + "_b" + str(i) for i in range(len(self.bArrs)) ]
         for name,arr in zip(self.bNames, self.bArrs):
-            self.ffCtx.kv.put(name, arr, profile=self.kvStats)
+            # Don't count bArr upload against total time, we assume that was done a priori
+            self.ffCtx.kv.put(name, arr)
             self.ownedKeys += self.bNames
 
 
@@ -111,7 +112,7 @@ class ChainedMults():
 
     def destroy(self):
         for key in self.ownedKeys:
-            self.ffCtx.kv.delete(key, profile=self.kvStats)
+            self.ffCtx.kv.delete(key)
         self.remFunc.Close()
 
 
@@ -171,7 +172,9 @@ class benchClient():
         if not isinstance(inArr, str):
             inKey = self.name + "_input"
             with ff.timer("t_write_input", self.stats):
-                self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
+                # Input writing time is not included in kv stats because it is
+                # not considered on the critical path of a single request.
+                self.ffCtx.kv.put(self.name + "_input", inArr)
             cleanInput = True
         else:
             inKey = inArr
@@ -185,7 +188,7 @@ class benchClient():
             self.lastRetKey = self.func.invoke(inKey)
 
         if cleanInput:
-            self.ffCtx.kv.delete(inKey, profile=self.kvStats)
+            self.ffCtx.kv.delete(inKey)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
@@ -243,7 +246,7 @@ class benchClient():
 
     def getResult(self):
         with ff.timer("t_read_output", self.stats):
-            raw = getData(self.ffCtx, self.lastRetKey, self.shapes[-1].c, stats=self.kvStats)
+            raw = getData(self.ffCtx, self.lastRetKey, self.shapes[-1].c)
         return raw
 
 

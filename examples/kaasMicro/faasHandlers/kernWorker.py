@@ -51,7 +51,7 @@ def sgemm(req, ctx):
 
         bArrs = []
         for bKey, shape in zip(req['bArrs'], shapes):
-            bArrs.append(pygemm.getData(ctx, bKey, shape.b, stats=ctx.profs.mod('kv'))) 
+            bArrs.append(pygemm.getData(ctx, bKey, shape.b, stats=ctx.profs.mod('kv'), profFinal=False))
 
         reqState.func = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'], stats=ctx.profs)
         ctx.scratch = reqState
@@ -67,11 +67,14 @@ def sgemm(req, ctx):
         with ff.timer('t_preprocess', ctx.profs):
             time.sleep(req['preprocess'] / 1000)
 
-    inArr = pygemm.getData(ctx, req['input'], shapes[0].a, stats=ctx.profs.mod('kv'))
+    inArr = pygemm.getData(ctx, req['input'], shapes[0].a, stats=ctx.profs.mod('kv'), profFinal=False)
 
     outArr = ctx.scratch.func.invoke(inArr)
 
-    ctx.kv.put(req['output'], outArr, profile=ctx.profs.mod('kv'))
+    ctx.kv.put(req['output'], outArr, profile=ctx.profs.mod('kv'), profFinal=False)
+
+    for p in ctx.profs.mod('kv').values():
+        p.increment()
 
     return {}
 

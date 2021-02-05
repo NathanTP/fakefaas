@@ -50,6 +50,7 @@ def getProdJit():
     func.prepare(["P"]*4)
     return func
 
+
 def getJitted():
     mod = SourceModule("""
       #include <stdint.h>
@@ -62,6 +63,7 @@ def getJitted():
     func = mod.get_function("multiply")
     func.prepare(['P', 'f'])
     return func
+
 
 def testProd():
     f = getProdJit()

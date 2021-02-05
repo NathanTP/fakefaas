@@ -12,7 +12,10 @@ class mmFunc():
         if isinstance(arg, kaasServer.bufferSpec):
             return arg
         elif isinstance(arg, np.ndarray):
-            self.ffCtx.kv.put(self.name + "_" + bname, arg, profile=self.kvStats)
+            # The current benchmark does not count uploads from the client
+            # against KV time since they are assumed to already be in the KV
+            # store.
+            self.ffCtx.kv.put(self.name + "_" + bname, arg)
         elif arg is not None:
             raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
 
@@ -53,8 +56,8 @@ class mmFunc():
 
         # dims is a property of a multiplier function, not any particular
         # invocation. We upload it at registration time.
-        self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64), profile=self.kvStats)
-        self.dimBuf = kaasServer.bufferSpec(self.name + "_dims", 4*8)
+        self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64))
+        self.dimBuf = kaasServer.bufferSpec(self.name + "_dims", 4*8, const=True)
         self.generatedBufs.append(self.dimBuf.name)
 
         if mmKern == 'sgemm':
@@ -117,7 +120,7 @@ class mmFunc():
         or C buffers (even bConst) are the responsibility of the caller to
         free."""
         for b in self.generatedBufs:
-            self.ffCtx.kv.delete(b, profile=self.kvStats)
+            self.ffCtx.kv.delete(b)
 
 
 class ChainedMults():
@@ -180,7 +183,7 @@ class ChainedMults():
         generatedInput = False
         if isinstance(inBuf, np.ndarray):
             with ff.timer("t_write_input", self.stats):
-                self.ffCtx.kv.put(self.name+"_l0_a", inBuf, profile=self.kvStats)
+                self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
             inBuf = kaasServer.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
             generatedInput = True
 
@@ -207,7 +210,7 @@ class ChainedMults():
             self.kHandle.Invoke(req.toDict())
 
         if generatedInput:
-            self.ffCtx.kv.delete(inBuf.name, profile=self.kvStats)
+            self.ffCtx.kv.delete(inBuf.name)
 
         return outBuf.name
 
@@ -373,7 +376,7 @@ class benchClient():
         self.func.destroy()
 
         for b in self.generatedBufs:
-            self.ff.kv.delete(b, profile=self.kvStats)
+            self.ff.kv.delete(b)
 
 
     def _bufArgToBuf(self, arg, const=False):
@@ -386,7 +389,7 @@ class benchClient():
             arrName = self.name + "_array" + str(self.nextArrayID)
             self.nextArrayID += 1
 
-            self.ff.kv.put(arrName, arg, profile=self.kvStats)
+            self.ff.kv.put(arrName, arg)
             b = kaasServer.bufferSpec(arrName, arg.nbytes)
             self.generatedBufs.append(b.name)
             return b

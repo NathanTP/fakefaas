@@ -102,6 +102,7 @@ class DirectRemoteFunc(RemoteFunc):
 
     def __init__(self, packagePath, funcName, context, stats=None):
         self.fName = funcName
+        self.packagePath = packagePath
 
         # The profs in ctx are used only for passing to the function,
         # self.stats is for the client-side RemoteFun
@@ -111,22 +112,9 @@ class DirectRemoteFunc(RemoteFunc):
         else:
             self.stats = stats 
 
-        with util.timer("t_init", self.stats):
-            if packagePath in _importedFuncPackages:
-                self.funcs = _importedFuncPackages[packagePath]
-            else:
-                name = packagePath.stem
-                if packagePath.is_dir():
-                    packagePath = packagePath / "__init__.py"
-
-                spec = importlib.util.spec_from_file_location(name, packagePath)
-                if spec is None:
-                    raise RuntimeError("Failed to load function from " + str(packagePath))
-
-                package = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(package)
-                self.funcs = package.LibffInvokeRegister()
-                _importedFuncPackages[packagePath] = self.funcs 
+        # Initialization is delated to the first call to properly account for
+        # cold starts.
+        self.initialized = False
 
 
     # Not actually async, just delays execution until you ask for it
@@ -135,6 +123,24 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Invoke(self, arg):
+        if not self.initialized:
+            with util.timer("t_init", self.stats):
+                if self.packagePath in _importedFuncPackages:
+                    self.funcs = _importedFuncPackages[self.packagePath]
+                else:
+                    name = self.packagePath.stem
+                    if self.packagePath.is_dir():
+                        self.packagePath = self.packagePath / "__init__.py"
+
+                    spec = importlib.util.spec_from_file_location(name, self.packagePath)
+                    if spec is None:
+                        raise RuntimeError("Failed to load function from " + str(self.packagePath))
+
+                    package = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(package)
+                    self.funcs = package.LibffInvokeRegister()
+                    _importedFuncPackages[self.packagePath] = self.funcs 
+
         with util.timer('t_invoke', self.stats):
             if self.fName not in self.funcs:
                 raise RuntimeError("Function '" + self.fName + "' not registered")
@@ -254,12 +260,15 @@ class _processPool():
         self.execs = {}
 
     #XXX deal with arrayMnt
-    def getExecutor(self, packagePath, clientID, arrayMnt=None):
+    def getExecutor(self, packagePath, clientID, arrayMnt=None, stats=None):
         # For now there's only ever one executor per package. This will change eventually.
         # This implies that clientID is not used yet, it will be needed later.
 
+        # t_init will be finalized in waitReady. This implies that you have to
+        # pass the same stats to both these functions...
         if packagePath not in self.execs:
-            self.execs[packagePath] = [ _processExecutor(packagePath, arrayMnt=arrayMnt) ]
+            with util.timer('t_init', stats, final=False):
+                self.execs[packagePath] = [ _processExecutor(packagePath, arrayMnt=arrayMnt) ]
 
         pkgPool = self.execs[packagePath]
         return pkgPool[0]
@@ -316,7 +325,7 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def InvokeAsync(self, arg):
-        proc = _processExecutors.getExecutor(self.packagePath, self.clientID)
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID, stats=self.stats)
 
         req = { "command" : "invoke",
                 "stats" : util.profCollection(),

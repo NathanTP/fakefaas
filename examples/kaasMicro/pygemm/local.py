@@ -61,7 +61,10 @@ class ChainedMults():
         self.useCuda = useCuda
         self.name = name
         self.ffCtx = ffCtx
-        self.stats = stats
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats
 
         # devBarrs is cuda pointers and will be allocated on the first invocation
         self.devBarrs = None
@@ -88,9 +91,9 @@ class ChainedMults():
     def _checkInitialized(self):
         with ff.timer('t_modelInit', checkLevel(self.stats, 1)): 
             if self.useCuda:
-                with ff.timer("t_kernelLoad", checkLevel(self.stats, 1), final=False):
-                    global cudaLib, gemmFunc
-                    if cudaLib is None:
+                global cudaLib, gemmFunc
+                if cudaLib is None:
+                    with ff.timer("t_kernelLoad", checkLevel(self.stats, 1)):
                         cudaLib = cuda.module_from_file(str(kernsDir / "gemm.cubin"))
                         gemmFunc = cudaLib.get_function("sgemm")
                         gemmFunc.prepare(["P"]*4)
@@ -156,14 +159,15 @@ class ChainedMults():
 
             aBuf = cBufs[i]
         
-        hostC = np.zeros((self.shapes[-1].M, self.shapes[-1].N), dtype=np.float32)
+        with ff.timer('t_zero', self.stats, final=False):
+            hostC = np.zeros((self.shapes[-1].M, self.shapes[-1].N), dtype=np.float32)
 
         updateProf(self.stats, 's_dtoh', hostC.nbytes, 1)
-        with ff.timer("t_dtoh", checkLevel(self.stats, 1)):
+        with ff.timer("t_dtoh", checkLevel(self.stats, 1), final=False):
             cuda.memcpy_dtoh(hostC, cBufs[-1])
 
         # Free temporaries
-        with ff.timer("t_cudaMM", checkLevel(self.stats, 1)):
+        with ff.timer("t_cudaMM", checkLevel(self.stats, 1), final=False):
             inDbuf.free()
             for i in range(len(self.shapes)):
                 cBufs[i].free()
@@ -181,8 +185,8 @@ class ChainedMults():
         return aArr
 
 
-    def invoke(self, inBuf, outBuf=None, stats=None):
-        with ff.timer("t_invoke", stats): 
+    def invoke(self, inBuf, outBuf=None):
+        with ff.timer("t_invoke", self.stats): 
             if self.useCuda:
                 res = self._invokeCuda(inBuf, outBuf)
 
@@ -195,7 +199,7 @@ class ChainedMults():
             else:
                 res = self._invokeNP(inBuf, outBuf)
         if self.ffCtx is not None:
-            self.ffCtx.kv.put(self.name+"_out", res, profile=stats.mod('kv'))
+            self.ffCtx.kv.put(self.name+"_out", res, profile=self.stats.mod('kv'))
             return self.name+"_out"
         else:
             return res
@@ -236,7 +240,11 @@ class benchClient():
         """
         self.rng = rng
         self.name = name
-        self.stats = stats
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats
+
         if preprocessTime is not None:
             self.preprocessSeconds = preprocessTime / 1000
         else:
@@ -255,21 +263,18 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx=ffCtx, useCuda=useCuda, stats=self.stats.mod('worker'))
+        self.func = ChainedMults(name, self.shapes, ffCtx=ffCtx, useCuda=useCuda, stats=self.stats)
 
 
     def invoke(self, inArr):
         """Invoke the client's function once, leaving the output in the kv
-        store. If this object was created with an rng, invokeDelayed will wait
-        a random amount of time before invoking. You can get the output of the
-        last invocation with benchClient.getResult()."""
-        if self.rng is not None:
-            time.sleep(self.rng() / 1000)
-
+        store. You can get the output of the last invocation with
+        benchClient.getResult()."""
         with ff.timer('t_e2e', self.stats):
-            time.sleep(self.preprocessSeconds)
+            with ff.timer('t_preprocess', self.stats):
+                time.sleep(self.preprocessSeconds)
 
-            self.lastRet = self.func.invoke(inArr, stats=self.stats)
+            self.lastRet = self.func.invoke(inArr)
 
         return self.lastRet
 
@@ -295,11 +300,18 @@ class benchClient():
             inBufs = inArrs
 
         for i in range(n):
+            if self.rng is not None:
+                time.sleep(self.rng() / 1000)
+
             self.lastRet = self.invoke(inBufs[ i % len(inBufs) ])
 
 
     def getStats(self):
-        return self.stats.report()
+        return self.stats
+
+
+    def resetStats(self):
+        self.stats.reset()
 
 
     def getResult(self):

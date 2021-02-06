@@ -5,7 +5,8 @@ from libff import kv, invoke
 
 from .util import *
 
-workerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasWorker.py"
+kernWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasHandlers" / "kernWorker.py"
+preWorkerPath = pathlib.Path(__file__).parent.parent.resolve() / "faasHandlers" / "preWorker.py"
 
 class ChainedMults():
     def __init__(self, name, shapes, ffCtx, mode='direct', preprocessTime=None, bArrs=None, useCuda=True, stats=None):
@@ -14,17 +15,30 @@ class ChainedMults():
         self.ffCtx = ffCtx
         self.name = name
         self.preprocessTime = preprocessTime
-        self.stats = stats
+
+        # It's a mess to try and have no stats (too many Nonetype issues) and I
+        # don't think the overheads are all that bad. It's just easier to
+        # collect them even if the user doesn't care.
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats
+
         self.kvStats = self.stats.mod('kv')
 
         # List of keys we are responsible for destroying
         self.ownedKeys = []
 
+        if self.stats is not None:
+            self.kvStats = self.stats.mod('kv')
+        else:
+            self.kvStats = None
+
         if mode == 'direct':
-            self.remFunc = ff.invoke.DirectRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+            self.remFunc = ff.invoke.DirectRemoteFunc(kernWorkerPath, 'sgemm', self.ffCtx,
                     stats=self.stats.mod('remfunc'))
         else:
-            self.remFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'sgemm', self.ffCtx,
+            self.remFunc = ff.invoke.ProcessRemoteFunc(kernWorkerPath, 'sgemm', self.ffCtx,
                     stats=self.stats.mod('remfunc'))
 
         self.bArrs = []
@@ -46,7 +60,8 @@ class ChainedMults():
 
         self.bNames = [ name + "_b" + str(i) for i in range(len(self.bArrs)) ]
         for name,arr in zip(self.bNames, self.bArrs):
-            self.ffCtx.kv.put(name, arr, profile=self.kvStats)
+            # Don't count bArr upload against total time, we assume that was done a priori
+            self.ffCtx.kv.put(name, arr)
             self.ownedKeys += self.bNames
 
 
@@ -81,14 +96,28 @@ class ChainedMults():
         return outKey
 
 
+    def getStats(self):
+        """Update the stats object passed at initialization with any
+        outstanding statistics and return it. getStats() is idempotent."""
+        # Everything in chainedmults updates self.stats directly, no need to
+        # update that beyond the remfunc
+        self.remFunc.getStats()
+        return self.stats
+
+
+    def resetStats(self):
+        self.remFunc.resetStats()
+        self.stats.reset()
+
+
     def destroy(self):
         for key in self.ownedKeys:
-            self.ffCtx.kv.delete(key, profile=self.kvStats)
+            self.ffCtx.kv.delete(key)
         self.remFunc.Close()
 
 
 class benchClient():
-    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, mode='direct', rng=None, useCuda=True, stats=None):
+    def __init__(self, name, depth, sideLen, ffCtx, preprocessTime=None, preprocessInline=False, mode='direct', rng=None, useCuda=True, stats=None):
         """A general driver for the sgemm benchmark.
             - preprocessTime: amount of time to spend preprocessing on a
               host-only function, None skips the preprocess step entirely.
@@ -100,10 +129,19 @@ class benchClient():
         self.name = name
         self.rng = rng
         self.nbytes = sizeFromSideLen(depth, sideLen)
-        self.stats = stats 
+        if stats is None:
+            self.stats = ff.profCollection()
+        else:
+            self.stats = stats 
         self.kvStats = self.stats.mod('kv')
+
         self.ffCtx = ffCtx
         self.preTime = preprocessTime
+
+        if self.preTime is not None:
+            self.preInline = preprocessInline
+        else:
+            self.preInline = True
 
         # Keys that we are responsible for deleting
         self.ownedKeys = []
@@ -114,35 +152,43 @@ class benchClient():
         # Uniform shape for now
         self.shapes = [ mmShape(sideLen, sideLen, sideLen) ] * depth
 
-        self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, preprocessTime=self.preTime, stats=self.stats)
+        if self.preInline:
+            self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda,
+                    preprocessTime=self.preTime, stats=self.stats)
+        else:
+            self.func = ChainedMults(name, self.shapes, ffCtx, mode, useCuda=useCuda, stats=self.stats)
 
-        if self.preTime is not None:
+        if not self.preInline and self.preTime is not None:
             if mode == 'direct':
-                self.preFunc = ff.invoke.DirectRemoteFunc(workerPath, 'preprocess', self.ffCtx)
+                self.preFunc = ff.invoke.DirectRemoteFunc(preWorkerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('prefunc'))
             else:
-                self.preFunc = ff.invoke.ProcessRemoteFunc(workerPath, 'preprocess', self.ffCtx)
+                self.preFunc = ff.invoke.ProcessRemoteFunc(preWorkerPath, 'preprocess',
+                        self.ffCtx, stats=self.stats.mod('prefunc'))
 
 
     def invoke(self, inArr):
-        if self.rng is not None:
-            time.sleep(self.rng() / 1000)
+        cleanInput = False
+        if not isinstance(inArr, str):
+            inKey = self.name + "_input"
+            with ff.timer("t_write_input", self.stats):
+                # Input writing time is not included in kv stats because it is
+                # not considered on the critical path of a single request.
+                self.ffCtx.kv.put(self.name + "_input", inArr)
+            cleanInput = True
+        else:
+            inKey = inArr
 
         with ff.timer('t_e2e', self.stats):
-            cleanInput = False
-            if not isinstance(inArr, str):
-                inKey = self.name + "_input"
-                with ff.timer("t_write_input", self.stats):
-                    self.ffCtx.kv.put(self.name + "_input", inArr, profile=self.kvStats)
-                cleanInput = True
-            else:
-                inKey = inArr
+            if not self.preInline:
+                if self.preTime is not None:
+                    with ff.timer("t_preprocess", self.stats):
+                        self.preFunc.Invoke({'input': inKey, 'processTime' : self.preTime, 'output' : inKey})
 
-            # if self.preTime is not None:
-            #     self.preFunc.Invoke({'input': 
             self.lastRetKey = self.func.invoke(inKey)
 
-            if cleanInput:
-                self.ffCtx.kv.delete(inKey, profile=self.kvStats)
+        if cleanInput:
+            self.ffCtx.kv.delete(inKey)
 
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
@@ -160,26 +206,42 @@ class benchClient():
             with ff.timer("t_write_input", self.stats):
                 for i,b in enumerate(inBufs):
                     inName = self.name + "_input" + str(i)
-                    self.ffCtx.kv.put(inName, b, profile=self.kvStats)
+                    # Initial input writing not counted against stats, we
+                    # assume the inputs came from somewhere else and were
+                    # magically in the KV store
+                    self.ffCtx.kv.put(inName, b)
                     inNames.append(inName)
             inBufs = inNames
             deleteInputs = True
 
         for i in range(n):
+            if self.rng is not None:
+                time.sleep(self.rng() / 1000)
+
             self.invoke(inBufs[ i % len(inBufs) ])
+
             if fetchResult:
                 self.getResult()
 
-            self.ffCtx.kv.delete(self.lastRetKey, profile=self.kvStats)
+            self.ffCtx.kv.delete(self.lastRetKey)
 
         if deleteInputs:
             for key in inBufs:
-                self.ffCtx.kv.delete(key, profile=self.kvStats)
+                self.ffCtx.kv.delete(key)
 
 
     def getStats(self):
-        report = self.stats.report()
-        return report 
+        self.func.getStats()
+        if self.preTime is not None and not self.preInline:
+            self.preFunc.getStats()
+        return self.stats
+
+
+    def resetStats(self):
+        self.func.resetStats()
+        if self.preTime is not None and not self.preInline:
+            self.preFunc.resetStats()
+        self.stats.reset()
 
 
     def getResult(self):

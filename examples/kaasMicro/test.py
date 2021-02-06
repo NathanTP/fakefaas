@@ -95,13 +95,13 @@ def testChained(mode, clientType):
 def testClient(mode, clientType):
     libffCtx = pygemm.getCtx(remote=(mode == 'process'))
 
+    stats = libff.profCollection()
     if clientType == 'faas':
-        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode)
+        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
     elif clientType == 'kaas':
-        kaasHandle = kaasServer.getHandle(mode, libffCtx)
-        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, kaasHandle)
+        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
     else:
-        client = pygemm.local.benchClient("benchClientTest", 4, 1024, libffCtx)
+        client = pygemm.local.benchClient("benchClientTest", 4, 1024, ffCtx=libffCtx, stats=stats)
 
     # benchclients manage most of the experiment themselves so we can't really
     # verify correctness (we trust testChained to do that). But we will make
@@ -110,15 +110,17 @@ def testClient(mode, clientType):
     inArr = pygemm.generateArr(client.shapes[0].a)
     client.invoke(inArr)
     testOut = client.getResult()
+    
+    client.resetStats()
 
     start = time.time()
     client.invokeN(2)
     tInvoke = time.time() - start 
 
-    stats = client.getStats()
+    stats = client.getStats().report()
     client.destroy()
     
-    reported = stats['LocalStats']['t_client_invoke']
+    reported = stats['t_invoke']
     measured = (tInvoke / 2)*1000
     if (measured / reported) < 0.5:
         print("FAIL")
@@ -128,24 +130,6 @@ def testClient(mode, clientType):
     else:
         print("PASS")
 
-    # s = kaasHandle.Stats()
-    #
-    # timeMetricsTotal = 0
-    # for k,v in s['WorkerStats'].items():
-    #     if k[:2] == 't_':
-    #         timeMetricsTotal += v
-    # print("Total Time: ", s['LocalStats']['t_libff_invoke'])
-    # print("Time Metrics Total: ", timeMetricsTotal)
-    # print("Missing Time: ", s['LocalStats']['t_libff_invoke'] - timeMetricsTotal)
-    # pprint(s)
-
-    # clientPoisson = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.poisson(5))
-    # clientPoisson.invokeN(5, inArrs=5)
-    # clientPoisson.destroy()
-    #
-    # clientZipf = benchClient("benchClientTest", 3, 128, libffCtx, kaasHandle, rng=benchClient.zipf(2, maximum=100))
-    # clientZipf.invokeN(5, inArrs = [ generateArr(clientZipf.shapes[0].a) for i in range(5) ])
-    # clientZipf.destroy()
 
 @contextmanager
 def testenv(testName, mode, clientType):
@@ -162,26 +146,29 @@ def testenv(testName, mode, clientType):
 
     if mode == 'process':
         redisProc.terminate()
+        # It takes a while for redis to release the port after exiting
+        time.sleep(0.5)
 
+    # Resets most of the state internal to libff.invoke (at least for process
+    # mode, direct mode can't really clean up the packages unfortunately
+    ff.invoke.DestroyFuncs()
 
 if __name__ == "__main__":
     clientTypes = ['kaas', 'faas', 'local']
     modes = ['direct', 'process']
 
     # mode = 'direct'
-    # clientType = 'faas'
+    # clientType = 'local'
     # benchName = "_".join(["chained", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testChained(mode, clientType)
     #     print("PASS")
-    #     time.sleep(0.5)
-
+    #
     # benchName = "_".join(["client", mode, clientType])
     # with testenv(benchName, mode, clientType):
     #     print(benchName)
     #     testClient(mode, clientType)
-    #     # testChained(mode, clientType)
     # sys.exit() 
 
     for (mode, clientType) in itertools.product(modes, clientTypes):
@@ -189,12 +176,8 @@ if __name__ == "__main__":
         with testenv(benchName, mode, clientType):
             print(benchName)
             testChained(mode, clientType)
-            # The OS takes a little bit to clean up the port reservation, gotta
-            # wait before restarting redis
-            time.sleep(0.5)
 
         benchName = "_".join(["client", mode, clientType])
         with testenv(benchName, mode, clientType):
             print(benchName)
             testClient(mode, clientType)
-            time.sleep(0.5)

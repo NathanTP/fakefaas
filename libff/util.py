@@ -44,13 +44,12 @@ class profCollection(collections.abc.MutableMapping):
     particular, it will generate an empty prof whenever a non-existant key is
     accessed."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         # a map of modules included in these stats. Each module is a
         # profCollection. Submodules can nest indefinitely.
         self.mods = {}
 
         self.profs = dict()
-        self.update(dict(*args, **kwargs))
 
     def __getitem__(self, key):
         if key not in self.profs:

@@ -2,11 +2,8 @@ import sys
 import time
 import libff as ff
 
+sys.path.append("../")
 import pygemm
-
-#XXX
-# Cache between calls
-# gemmFunc = None
 
 
 class sgemmState():
@@ -54,7 +51,7 @@ def sgemm(req, ctx):
 
         bArrs = []
         for bKey, shape in zip(req['bArrs'], shapes):
-            bArrs.append(pygemm.getData(ctx, bKey, shape.b)) 
+            bArrs.append(pygemm.getData(ctx, bKey, shape.b, stats=ctx.profs.mod('kv'), profFinal=False))
 
         reqState.func = pygemm.local.ChainedMults('faasWorker', shapes, bArrs=bArrs, useCuda=req['useCuda'], stats=ctx.profs)
         ctx.scratch = reqState
@@ -67,25 +64,22 @@ def sgemm(req, ctx):
     # omit preprocess in this req and instead directly invoke the preprocess()
     # function in this file to simulate two separate invocations.
     if 'preprocess' in req:
-        time.sleep(req['preprocess'] / 1000)
+        with ff.timer('t_preprocess', ctx.profs):
+            time.sleep(req['preprocess'] / 1000)
 
-    inArr = pygemm.getData(ctx, req['input'], shapes[0].a)
+    inArr = pygemm.getData(ctx, req['input'], shapes[0].a, stats=ctx.profs.mod('kv'), profFinal=False)
 
     outArr = ctx.scratch.func.invoke(inArr)
 
-    ctx.kv.put(req['output'], outArr, profile=ctx.profs.mod('kv'))
+    ctx.kv.put(req['output'], outArr, profile=ctx.profs.mod('kv'), profFinal=False)
+
+    for p in ctx.profs.mod('kv').values():
+        p.increment()
 
     return {}
 
 
-def preprocess(req, ctx):
-    """Simulate a preprocessing phase that precedes sgemm."""
-    inp = ctx.kv.get(req['input'], profile=ctx.profs.mod('kv'))
-    time.sleep(req['processTime'] / 1000)
-    ctx.kv.put(req['output'], inp, profile=ctx.profs.mod('kv'))
-
-
-funcMap = {'sgemm' : sgemm, 'preprocess' : preprocess}
+funcMap = {'sgemm' : sgemm}
 def LibffInvokeRegister():
     return funcMap 
 

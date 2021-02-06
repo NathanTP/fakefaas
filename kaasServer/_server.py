@@ -66,7 +66,8 @@ eventMetrics1 = [
         'n_KMiss',
         'n_KHit',
         't_kernelLoad',
-        't_cudaMM'
+        't_cudaMM',
+        't_hostMM'
         ]
 
 eventMetrics2 = [
@@ -143,6 +144,7 @@ class kaasBuf():
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
                 with ff.timer('t_zero', getProf(), final=False):
                     cuda.memset_d8(self.dbuf, 0, self.size)
+
             else:
                 with ff.timer('t_htod', getProf(), final=False):
                     cuda.memcpy_htod(self.dbuf, self.hbuf)
@@ -159,10 +161,11 @@ class kaasBuf():
             return
         else:
             logging.debug("Moving {}b from device (0x{}) ".format(self.size, hex(int(self.dbuf))) + self.name + " to host")
-            updateProf('s_dtoh', self.size)
             if self.hbuf is None:
-                self.hbuf = memoryview(bytearray(self.size))
+                with ff.timer('t_hostMM', getProf(), final=False):
+                    self.hbuf = memoryview(bytearray(self.size))
 
+            updateProf('s_dtoh', self.size)
             with ff.timer('t_dtoh', getProf(), final=False):
                 cuda.memcpy_dtoh(self.hbuf, self.dbuf)
 
@@ -377,7 +380,7 @@ class bufferCache():
                     self.ephemerals[bSpec.name] = buf
             else:
                 with ff.timer('t_hostDLoad', getProf(), final=False):
-                    raw = self.kv.get(bSpec.name, profile=getProf(mod='kv'))
+                    raw = self.kv.get(bSpec.name, profile=getProf(mod='kv'), profFinal=False)
                 if raw is None:
                     logging.debug("Loading (new buffer): " + bSpec.name)
                     buf = kaasBuf.fromSpec(bSpec)
@@ -409,13 +412,13 @@ class bufferCache():
                 # Data are stored as numpy arrays because memoryviews can't be
                 # pickled. This should still be zero copy.
                 logging.debug("Writing back to kv: " + buf.name)
+                updateProf('n_hostDWriteBack', 1)
                 with ff.timer('t_hostDWriteBack', getProf(), final=False):
-                    self.kv.put(buf.name, np.asarray(buf.hbuf), profile=getProf(mod='kv'))
+                    self.kv.put(buf.name, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
             buf.dirty = False
 
 
     def flush(self):
-        updateProf('n_hostDWriteBack', len(self.dirtyBufs))
         for b in self.dirtyBufs.values():
             self._flushOne(b)
 
@@ -456,7 +459,6 @@ def kaasServeInternal(req, ctx):
     """Internal implementation of kaas execution. Req is a kaas.kaasReq, not a
     dictionary"""
 
-    start = time.time()
     # This gets reset every call because libff only gives us the kv handle per
     # call and it could (in theory) change in some way between calls.
     bCache.setKV(ctx.kv)
@@ -495,6 +497,9 @@ def kaasServeInternal(req, ctx):
     if profLevel >= 1:
         for metric in eventMetrics1:
             profs[metric].increment()
+        for p in profs.mod('kv').values():
+            p.increment()
+
     if profLevel >= 2:
         for metric in eventMetrics2:
             profs[metric].increment()

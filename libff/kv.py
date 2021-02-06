@@ -57,31 +57,31 @@ class Redis(kv):
         self.serialize = serialize
 
 
-    def put(self, k, v, profile=None):
-        with timer("t_serialize", profile):
+    def put(self, k, v, profile=None, profFinal=True):
+        with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
                 v = pickle.dumps(v)
 
-        with timer("t_write", profile):
+        with timer("t_write", profile, final=profFinal):
             self.handle.set(k, v)
 
 
-    def get(self, k, profile=None):
-        with timer("t_read", profile):
+    def get(self, k, profile=None, profFinal=True):
+        with timer("t_read", profile, final=profFinal):
             raw = self.handle.get(k)
 
         if raw is None:
             raise KVKeyError(k)
 
-        with timer("t_deserialize", profile):
+        with timer("t_deserialize", profile, final=profFinal):
             if self.serialize and raw is not None:
                 return pickle.loads(raw)
             else:
                 return raw
 
 
-    def delete(self, *keys, profile=None):
-        with timer("t_delete", profile):
+    def delete(self, *keys, profile=None, profFinal=True):
+        with timer("t_delete", profile, final=profFinal):
             ret = self.handle.delete(*keys)
 
 
@@ -104,25 +104,25 @@ class Local(kv):
         self.serialize = serialize 
 
 
-    def put(self, k, v, profile=None):
-        with timer("t_serialize", profile):
+    def put(self, k, v, profile=None, profFinal=True):
+        with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
                  v = pickle.dumps(v)
             elif self.copy:
                  v = copy.deepcopy(v)
 
-        with timer("t_write", profile):
+        with timer("t_write", profile, final=profFinal):
             self.store[k] = v
 
 
-    def get(self, k, profile=None):
-        with timer("t_read", profile):
+    def get(self, k, profile=None, profFinal=True):
+        with timer("t_read", profile, final=profFinal):
             try:
                 raw = self.store[k]
             except KeyError:
                 return None
 
-        with timer("t_deserialize", profile):
+        with timer("t_deserialize", profile, final=profFinal):
             if self.serialize:
                 return pickle.loads(raw)
             elif self.copy:
@@ -131,8 +131,8 @@ class Local(kv):
                 return raw
 
 
-    def delete(self, *keys, profile=None):
-        with timer("t_delete", profile):
+    def delete(self, *keys, profile=None, profFinal=True):
+        with timer("t_delete", profile, final=profFinal):
             for k in keys:
                 try:
                     del self.store[k]

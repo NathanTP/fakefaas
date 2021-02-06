@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import pathlib
 import math
 from pprint import pprint
@@ -22,16 +23,12 @@ import kaasServer
 import pygemm
 import pygemm.kaas
 
-def startKaas(mode='direct', stats=None):
-    """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
-    libffCtx = pygemm.getCtx(remote=(mode == 'process'))
-    kaasHandle = kaasServer.getHandle(mode, libffCtx, stats=stats)
 
+def startKaas(ffCtx, mode='direct'):
+    """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
+    kaasHandle = kaasServer.getHandle(mode, ffCtx)
     kern = kaasServer.kernelSpec(pygemm.kernsDir / 'noop.cubin', 'noop', (1,1,1), (1,1,1))
     kaasHandle.Invoke(kaasServer.kaasReq([kern]).toDict())
-    kaasHandle.Stats(reset=True)
-
-    return (libffCtx, kaasHandle)
 
 
 def cleanStats(rawStats, config):
@@ -45,19 +42,15 @@ def writeStats(stats, path: pathlib.Path):
         with open(path, 'r') as f:
             allStats = json.load(f)
     else:
-        allStats = {}
+        allStats = []
 
-    expName = stats['name']
-    if expName in allStats:
-        allStats[expName].append(stats)
-    else:
-        allStats[expName] = [stats]
+    allStats.append(stats)
 
     with open(path, 'w') as f:
         json.dump(allStats, f, indent=2)
 
 
-def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None, outPath=None):
+def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None, preInline=False, outPath=None):
     """Run a benchmark, outputing a CSV named ${name}.csv with the name column
     set to name.  The benchmark will be run with the depth,size,mode and
     repeated nrpeat times + 1 (cold start + nrepeat warm starts).
@@ -67,19 +60,24 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None,
 
     topProfs = ff.profCollection()
     if clientType == 'kaas':
-        ffCtx, kaasCtx = startKaas(mode, stats=topProfs.mod("kaas"))
-        client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, kaasCtx,
+        # ffCtx, kaasCtx = startKaas(mode, stats=topProfs.mod("kaas"))
+        ffCtx = pygemm.getCtx(remote=(mode == 'process'))
+        startKaas(ffCtx, mode)
+
+        client = pygemm.kaas.benchClient('benchmark-'+ mode, depth, size, ffCtx, mode,
                 preprocessTime=preprocessTime, stats=topProfs.mod('client'))
     elif clientType == 'faas':
         ffCtx = pygemm.getCtx(remote=(mode == 'process'))
         client = pygemm.faas.benchClient('benchmark-'+ mode, depth, size, ffCtx,
-                preprocessTime=preprocessTime, mode=mode, useCuda=True, stats=topProfs.mod('client'))
+                preprocessTime=preprocessTime, preprocessInline=preInline,
+                mode=mode, useCuda=True, stats=topProfs.mod('client'))
     elif clientType == 'local':
         client = pygemm.local.benchClient('benchmark-'+ mode, depth, size,
                 preprocessTime=preprocessTime, useCuda=True, stats=topProfs.mod('client'))
 
-    configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat, 't_preprocess' : preprocessTime,
-            'matDim' : size, 'depth' : depth, 's_matrix' :  pygemm.sizeFromSideLen(depth, size),
+    configDict = { 'name' : name, 'mode' : mode, 'n_repeat' : nrepeat, 't_preprocess_configured' : preprocessTime,
+            'preInline' : preInline, 'matDim' : size, 'depth' : depth,
+            's_matrix' :  pygemm.sizeFromSideLen(depth, size),
             'client' : clientType, 'date' : datetime.now().isoformat()}
 
     if outPath is not None:
@@ -87,29 +85,29 @@ def benchmark(name, depth, size, mode, nrepeat, clientType, preprocessTime=None,
     else:
         outPath = pathlib.Path('.').resolve() / name + ".json"
 
+    # Probably not a useful metric, plus it's not really accounted for properly
+    # in the profiling anyway
+    fetchResult = False
+
     # Cold Start
-    client.invokeN(1)
+    client.invokeN(1, fetchResult=fetchResult)
+    client.getStats()
     coldStats = cleanStats(topProfs.report(), configDict)
     coldStats['warm'] = False
     writeStats(coldStats, outPath)
+
+    client.resetStats()
     topProfs.reset()
 
     # Warm Start
-    client.invokeN(nrepeat, fetchResult=True)
+    client.invokeN(nrepeat, fetchResult=fetchResult)
+    client.getStats()
     warmStats = cleanStats(topProfs.report(), configDict)
     warmStats['warm'] = True
     writeStats(warmStats, outPath)
-    topProfs.reset()
 
-    # newFile = not outPath.exists()
-    # with open(outPath, 'a') as csvF:
-    #     writer = csv.DictWriter(csvF, fieldnames=warmStats.keys())
-    #
-    #     if newFile:
-    #         writer.writeheader()
-    #
-    #     writer.writerow(warmStats)
-    #     writer.writerow(coldStats)
+    client.resetStats()
+    topProfs.reset()
 
 
 if __name__ == "__main__":
@@ -129,15 +127,20 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--niter", type=int, default=5, help="Number of experiment iterations to run for the warm results")
     parser.add_argument("-p", "--preprocess", default=None,
             help="Preprocessing time. This may be either a number of ms of preprocessing time to simulate or 'high'/'low' to use a preconfigured time as a fraction of problem size. If not specified, no preprocessing will be simulated.")
+    parser.add_argument("--preinline", action='store_true', 
+            help="For the FaaS client, perform preprocessing in the same function, otherwise preprocessing happens in a separate function.") 
+    parser.add_argument("--output", default='results.json', help="File name to write results to")
 
     args = parser.parse_args()
 
-    if args.preprocess.isdigit():
+    if args.preprocess is None:
+        preproc = None
+    elif args.preprocess.isdigit():
         preproc = int(args.preprocess)
 
     if args.size == 'small': 
         size = 1024
-        if not args.preprocess.isdigit():
+        if args.preprocess is not None and not args.preprocess.isdigit():
             # XXX ideally we'd actually calculate this somehow, but for now it's just hard-coded
             if args.preprocess == 'high':
                 # roughly 2x the model runtime
@@ -147,7 +150,7 @@ if __name__ == "__main__":
                 preproc = 20
     else:
         size = 1024*8
-        if not args.preprocess.isdigit():
+        if args.preprocess is not None and not args.preprocess.isdigit():
             if args.preprocess == 'high':
                 # roughly 2x the model runtime
                 preproc = 76000
@@ -155,18 +158,13 @@ if __name__ == "__main__":
                 # roughly 25% of the model runtime
                 preproc = 9500
 
-
-    # Each worker may collect different statistics and therefor must use a different CSV output
-    # outPath = args.worker+".csv"
-    outPath = 'results.json'
-
     if args.mode == 'process':
         redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
 
     try:
         benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter,
-                args.worker, outPath=outPath,
-                preprocessTime=preproc)
+                args.worker, outPath=args.output,
+                preprocessTime=preproc, preInline=args.preinline)
     except redis.exceptions.ConnectionError as e:
         print("Redis error:")
         print(e)

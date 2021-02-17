@@ -226,15 +226,7 @@ class kaasFunc():
         logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
             ", ".join([ str(l) for l in literalVals] + [ b.name for b in bufs])))
 
-        with ff.timer('t_kernel', getProf(level=2), final=False):
-            self.func.prepared_call(gridDim, blockDim, *args, shared_size=sharedSize)
-
-            # This is needed for profiling, but not for correctness (the CUDA
-            # driver will synchronize when necessary). In the current
-            # implementation we don't do anything asynchronously so it doesn't
-            # matter but eventually we'll want the asynchrony...
-            if profLevel >= 2:
-                pycuda.driver.Context.synchronize()
+        return self.func.prepared_timed_call(gridDim, blockDim, *args, shared_size=sharedSize)
 
 
 class kernelCache():
@@ -466,6 +458,7 @@ def kaasServeInternal(req, ctx):
     global profs
     profs = ctx.profs
 
+    invokeTimes = []
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)
 
@@ -475,7 +468,8 @@ def kaasServeInternal(req, ctx):
         temps = [ bCache.load(b) for b in kSpec.temps ]
         outputs = [ bCache.load(b, overwrite=True) for b in kSpec.uniqueOutputs ]
 
-        kern.Invoke(kSpec.literals, inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+        timer = kern.Invoke(kSpec.literals, inputs + temps + outputs, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+        invokeTimes.append(timer)
 
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.
@@ -499,6 +493,11 @@ def kaasServeInternal(req, ctx):
             profs[metric].increment()
         for p in profs.mod('kv').values():
             p.increment()
+
+        t_invoke = 0
+        for t in invokeTimes:
+            t_invoke += t()
+        profs['t_invoke'].increment(t_invoke*1000)
 
     if profLevel >= 2:
         for metric in eventMetrics2:

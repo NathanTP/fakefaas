@@ -16,6 +16,42 @@ def helloWorld():
     print(resp)
 
 
+def testCuda(mode):
+    ctx = libff.invoke.RemoteCtx(None, None)
+
+    if mode == 'process':
+        objType = libff.invoke.ProcessRemoteFunc
+    else:
+        objType = libff.invoke.DirectRemoteFunc
+    f0 = objType(workerPath, "cuda", ctx, enableGpu=True)
+    f1 = objType(workerPath, "cuda", ctx, enableGpu=True)
+
+    r0 = f0.Invoke({})
+    r1 = f1.Invoke({})
+    print(r0)
+    print(r1)
+
+    # if r0['deviceID'] == r1['deviceID']:
+    #     print("FAIL")
+    #     print("Functions didn't get unique devices:")
+    #     print(r0)
+    #     print(r1)
+    #     return
+
+    f1.Close()
+
+    f2 = objType(workerPath, "cuda", ctx, enableGpu=True)
+    r2 = f2.Invoke({})
+    print(r2)
+    # if r2['deviceID'] == r0['deviceID']:
+    #     print("FAIL")
+    #     print("Didn't get free device after re-allocation")
+    #     print(r0)
+    #     print(r2)
+    #     return
+
+    print("PASS")
+
 def testState(mode):
     ctx = libff.invoke.RemoteCtx(None, None)
 
@@ -171,8 +207,9 @@ def testAsync():
     return True
 
 if __name__ == "__main__":
-    if not stats(mode='direct'):
-        sys.exit(1)
+    testCuda(mode='process')
+    # if not stats(mode='direct'):
+    #     sys.exit(1)
 
     # helloWorld()
     #

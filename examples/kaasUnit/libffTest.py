@@ -120,7 +120,7 @@ def testDotProd(mode='direct'):
         print("PASS")
 
     print("Stats: ")
-    pprint(kaasHandle.Stats())
+    pprint(kaasHandle.getStats().report())
 
 
 rng = np.random.default_rng()

@@ -17,6 +17,46 @@ def helloWorld(constructor):
     print(resp)
 
 
+def testNonBlock(constructor):
+    """non-blocking only works for 'process' mode"""
+    if constructor is libff.invoke.DirectRemoteFunc:
+        print("Non-blocking mode only works with process remote funcs") 
+        return False
+
+    ctx = libff.invoke.RemoteCtx(None, None)
+    func = constructor(workerPath, "perfSim", ctx)
+
+    start = time.time()
+    fut = func.InvokeAsync({"runtime" : 1000})
+    reqFinishTime = time.time() - start
+
+    start = time.time()
+    resp = fut.get(block=False)
+    nonBlockRuntime = time.time() - start
+    if resp is not None:
+        print("Future returned too early after non-blocking get")
+        return False
+
+    start = time.time()
+    resp = fut.get()
+    blockRuntime = time.time() - start
+    if resp is None:
+        print("Future didn't block when asked to")
+        return False
+
+    if reqFinishTime > 1:
+        print("InvokeAsync took too long")
+        return False
+    if nonBlockRuntime > 1:
+        print("Non-blocking get took too long")
+        return False
+    if blockRuntime < 1:
+        print("Blocking call was too fast")
+        return False
+
+    return True
+   
+
 def testCuda(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
 
@@ -233,6 +273,11 @@ if __name__ == "__main__":
 
     print("Testing Async")
     if not testAsync(funcConstructor):
+        sys.exit(1)
+    print("PASS")
+
+    print("Testing Non-blocking futures")
+    if not testNonBlock(funcConstructor):
         sys.exit(1)
     print("PASS")
 

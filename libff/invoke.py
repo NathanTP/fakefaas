@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import os
 import subprocess as sp
 import abc
 import importlib.util
@@ -237,20 +238,40 @@ class _processExecutor():
 
         self.proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=self.packagePath.parent)
         self.ready = False
+        self.blocking = True 
 
-    def waitReady(self, stats=None):
+
+    def _setBlock(self, block):
+        if self.blocking == block:
+            return
+        else:
+            os.set_blocking(self.proc.stdout.fileno(), block)
+            self.blocking = block
+
+
+    def waitReady(self, stats=None, block=True):
         """Optional block until the function is ready. This is mostly just
         useful for profiling since send() is safe to call before the executor
-        is ready."""
+        is ready. If block==False, this polls for readiness. Returns True if
+        the executor is ready, false otherwise (False can only be returned if
+        block==False)"""
+
+        self._setBlock(block)
         if self.ready == False:
             # t_init really only measures from the time you wait for it, not
             # the true init time (hard to measure that without proper
             # asynchrony)
             with util.timer("t_init", stats):
                 readyMsg = self.proc.stdout.readline()
+
+            if not block and readyMsg == "":
+                return False
+
             if readyMsg != "READY\n":
                 raise InvocationError("Executor failed to initialize: "+readyMsg)
-        self.ready = True
+
+            self.ready = True
+            return True
 
 
     def send(self, msg, funcID, stats=None):
@@ -269,18 +290,22 @@ class _processExecutor():
         return msgId
 
 
-    def recv(self, reqId, funcID, stats=None):
+    def recv(self, reqId, funcID, stats=None, block=True):
         """Recieve the response for the request with ID reqId. Users may only
         recv each ID exactly once. Responses are expected to come in order."""
 
-        # Func ID is unused for now, the worker just returns responses in FIFO order
-
+        self._setBlock(block)
         if not self.ready:
-            self.waitReady(stats=stats)
+            if not self.waitReady(stats=stats, block=block):
+                return None
 
         while self.lastResp < reqId:
-            self.lastResp += 1
-            self.resps[self.lastResp] = self.proc.stdout.readline()
+            resp = self.proc.stdout.readline()
+            if not block and resp == "":
+                return None
+            else:
+                self.lastResp += 1
+                self.resps[self.lastResp] = resp 
 
         with util.timer('t_responseDecode', stats):
             try:
@@ -308,6 +333,7 @@ class _processExecutor():
          
         This operation is synchronous in order to ensure that all resources are
         indeed freed."""
+        self._setBlock(True)
         while self.lastResp < self.nextMsgId - 1:
             self.lastResp += 1
             self.resps[self.lastResp] = self.proc.stdout.readline()
@@ -353,11 +379,10 @@ class _processPool():
         return executor 
 
     def destroy(self):
-        for exList in self.execs.values():
-            for ex in exList:
-                ex.destroy()
+        for ex in self.execs:
+            ex.kill()
 
-        self.execs = {}
+        self.execs = []
 
 
 class ProcessRemoteFuncFuture():
@@ -367,11 +392,11 @@ class ProcessRemoteFuncFuture():
         self.stats = stats
         self.funcID = funcID
 
-    def get(self):
+    def get(self, block=True):
         with util.timer('t_futureWait', self.stats):
-            resp = self.proc.recv(self.reqID, self.funcID, stats=self.stats)
+            resp = self.proc.recv(self.reqID, self.funcID, stats=self.stats, block=block)
         return resp
-
+    
 
 def DestroyFuncs():
     """Creating a RemoteFunction may introduce global state, this function

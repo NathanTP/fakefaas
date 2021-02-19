@@ -35,13 +35,19 @@ class RemoteFunc(abc.ABC):
     """Represents a remote (or at least logically separate) function"""
 
     @abc.abstractmethod
-    def __init__(self, packagePath, funcName, context, stats=None, enableGpu=False):
+    def __init__(self, packagePath, funcName, context, clientID=0, stats=None, enableGpu=False):
         """Create a remote function from the provided package.funcName.
         arrayMnt should point to wherever child workers should look for
         arrays. Stats is a reference to a libff.profCollection() to be used for
         any internal statistics. The object will be modified in-place (no
         copies are made). However, to ensure all updates are finalized, users
-        must call getStats()."""
+        must call getStats().
+        
+        clientID identifies a unique tennant in the system. Functions from
+        different clients will get independent executors while functions from
+        the same client may or may not get a different executor on each call.
+        ClientID -1 is reserved for system services like KaaS and may be
+        treated differently."""
         pass
     
 
@@ -115,9 +121,10 @@ class DirectRemoteFunc(RemoteFunc):
     returns a mapping of function name -> function object. This is similar to
     the 'funcs' argument to RemoteProcessServer."""
 
-    def __init__(self, packagePath, funcName, context: RemoteCtx, stats=None, enableGpu=False):
+    def __init__(self, packagePath, funcName, context: RemoteCtx, clientID=0, stats=None, enableGpu=False):
         self.fName = funcName
         self.packagePath = packagePath
+        self.clientID = clientID
 
         # The profs in ctx are used only for passing to the function,
         # self.stats is for the client-side RemoteFun
@@ -186,7 +193,7 @@ class _processExecutor():
     # executors may be shared by multiple clients. As such, they have no
     # persistent stats of their own. Each call has a stats argument that can be
     # filled in by whoever is calling.
-    def __init__(self, packagePath, arrayMnt=None, enableGpu=False):
+    def __init__(self, packagePath, clientID, arrayMnt=None, enableGpu=False):
         """Represents a handle to a remote process worker. Workers are
         independent of any particular client. Many fexecutor functions take
         statistics, these will be updated with internal statistics of the
@@ -194,8 +201,12 @@ class _processExecutor():
         statistics separately (using the 'getStats' command)."""
         self.arrayMnt = arrayMnt
         self.packagePath = packagePath
+        self.clientID = clientID
+        self.enableGpu = enableGpu
+
         # Next id to use for outgoing mesages
-        self.nextId = 0
+        self.nextMsgId = 0
+        self.dead = False
 
         if cudaAvailable and enableGpu:
             if len(cudaFreeDevs) == 0:
@@ -243,8 +254,11 @@ class _processExecutor():
 
 
     def send(self, msg, funcID, stats=None):
-        msgId = self.nextId
-        self.nextId += 1
+        if self.dead:
+            raise InvocationError("Tried to send to a dead executor")
+
+        msgId = self.nextMsgId
+        self.nextMsgId += 1
 
         msg['funcID'] = funcID
         with util.timer('t_requestEncode', stats):
@@ -257,9 +271,9 @@ class _processExecutor():
 
     def recv(self, reqId, funcID, stats=None):
         """Recieve the response for the request with ID reqId. Users may only
-        recv each ID exactly once."""
+        recv each ID exactly once. Responses are expected to come in order."""
 
-        # Client ID is unused for now, the worker just returns responses in FIFO order
+        # Func ID is unused for now, the worker just returns responses in FIFO order
 
         if not self.ready:
             self.waitReady(stats=stats)
@@ -280,29 +294,63 @@ class _processExecutor():
         return resp['resp']
 
 
-    def destroy(self):
+    def getConfig(self):
+        """Returns a tuple of the configuration properties for this executor.
+        Configuration properties uniquely identify functionality of the
+        executor. i.e. executors with the same config are interchangeable
+        w.r.t. client requests."""
+        return (self.packagePath, self.clientID, self.enableGpu, self.arrayMnt)
+
+
+    def kill(self, force=False):
+        """Wait for all outstanding work to complete, then kill the worker.
+        Users can still call recv on this object, but they can no longer send.
+         
+        This operation is synchronous in order to ensure that all resources are
+        indeed freed."""
+        while self.lastResp < self.nextMsgId - 1:
+            self.lastResp += 1
+            self.resps[self.lastResp] = self.proc.stdout.readline()
+
         self.proc.stdin.close()
         self.proc.wait()
+        self.dead = True
+
+        if self.enableGpu:
+            cudaFreeDevs.append(self.cudaDev)
 
 
 class _processPool():
     def __init__(self):
-        # packagePath -> [ _processExecutor ]
-        self.execs = {}
+        self.execs = []
 
     #XXX deal with arrayMnt
-    def getExecutor(self, packagePath, funcID, arrayMnt=None, stats=None, enableGpu=False):
-        # For now there's only ever one executor per package. This will change eventually.
-        # This implies that funcID is not used yet, it will be needed later.
+    def getExecutor(self, packagePath, clientID, arrayMnt=None, stats=None, enableGpu=False):
 
-        # t_init will be finalized in waitReady. This implies that you have to
-        # pass the same stats to both these functions...
-        if packagePath not in self.execs:
+        executor = None
+        config = (packagePath, clientID, enableGpu, arrayMnt)
+        for e in self.execs:
+            if e.getConfig() == config:
+                executor = e
+                break
+
+        if executor is None:
+            if enableGpu and len(cudaFreeDevs) == 0:
+                # Gonna have to kill a gpu-enabled executor to get enough resources
+                for i in range(len(self.execs)):
+                    e = self.execs[i]
+                    if e.enableGpu:
+                        e.kill()
+                        del self.execs[i]
+                        break
+
+            # t_init will be finalized in waitReady. This implies that you have to
+            # pass the same stats to both these functions...
             with util.timer('t_init', stats, final=False):
-                self.execs[packagePath] = [ _processExecutor(packagePath, arrayMnt=arrayMnt, enableGpu=enableGpu) ]
+                executor = _processExecutor(packagePath, clientID, arrayMnt=arrayMnt, enableGpu=enableGpu)
+                self.execs.append(executor)
 
-        pkgPool = self.execs[packagePath]
-        return pkgPool[0]
+        return executor 
 
     def destroy(self):
         for exList in self.execs.values():
@@ -337,8 +385,9 @@ def DestroyFuncs():
 _processFuncNextID = 0
 
 class ProcessRemoteFunc(RemoteFunc):
-    def __init__(self, packagePath, funcName, context, stats=None, enableGpu=False):
+    def __init__(self, packagePath, funcName, context, clientID=0, stats=None, enableGpu=False):
         self.stats = stats
+        self.clientID = clientID
 
         global _processFuncNextID
         self.funcID = _processFuncNextID
@@ -357,7 +406,7 @@ class ProcessRemoteFunc(RemoteFunc):
 
 
     def InvokeAsync(self, arg):
-        proc = _processExecutors.getExecutor(self.packagePath, self.funcID, stats=self.stats, enableGpu=self.enableGpu)
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID, stats=self.stats, enableGpu=self.enableGpu)
 
         req = { "command" : "invoke",
                 "stats" : util.profCollection(),
@@ -382,7 +431,7 @@ class ProcessRemoteFunc(RemoteFunc):
         reference to it. You must call this to ensure that all statistics are
         available, otherwise you may only have partial results. getStats() is
         idempotent"""
-        proc = _processExecutors.getExecutor(self.packagePath, self.funcID)
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID, self.funcID)
         statsReq = {
                 'command' : 'reportStats',
                 # We always reset the worker since we now have those stats in

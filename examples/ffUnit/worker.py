@@ -18,6 +18,7 @@ def state(req, ctx):
 
 random.seed(time.time())
 def perfSim(req, ctx):
+    """Sleeps for req['runtime'] ms and returns some stats"""
     # You can time stuff
     with libff.timer('runtime', ctx.profs):
         time.sleep(req['runtime'] / 1000)
@@ -25,7 +26,7 @@ def perfSim(req, ctx):
     # You can also record non-time stuff using libff.prof() objects
     if 'randSample' not in ctx.profs:
         ctx.profs['randSample'] = libff.prof()
-    randomMetric = random.randint(0,100)
+    randomMetric = random.randint(0,1000)
     ctx.profs['randSample'].increment(randomMetric)
 
     # returns the random metric to aid in testing

@@ -20,68 +20,83 @@ def testCuda(mode):
     ctx = libff.invoke.RemoteCtx(None, None)
 
     if mode == 'process':
-        objType = libff.invoke.ProcessRemoteFunc
+        funcType = libff.invoke.ProcessRemoteFunc
     else:
-        objType = libff.invoke.DirectRemoteFunc
-    f0 = objType(workerPath, "cuda", ctx, enableGpu=True)
-    f1 = objType(workerPath, "cuda", ctx, enableGpu=True)
+        funcType = libff.invoke.DirectRemoteFunc
+    f0 = funcType(workerPath, "cuda", ctx, enableGpu=True)
+    f1 = funcType(workerPath, "cuda", ctx, enableGpu=True)
 
+    # Make sure multiple functions for the same client work
     r0 = f0.Invoke({})
     r1 = f1.Invoke({})
-    print(r0)
-    print(r1)
+    if r0['deviceID'] != r1['deviceID']:
+        print("TEST INVALID: libff gave different devices to two different functions from the same client. While legal, this invalidates the rest of the test, exiting early.")
+        print(r0)
+        print(r1)
+        return True
 
-    # if r0['deviceID'] == r1['deviceID']:
-    #     print("FAIL")
-    #     print("Functions didn't get unique devices:")
-    #     print(r0)
-    #     print(r1)
-    #     return
 
-    f1.Close()
-
-    f2 = objType(workerPath, "cuda", ctx, enableGpu=True)
+    # Different clients should get different devices
+    f2 = funcType(workerPath, "cuda", ctx, clientID=1, enableGpu=True)
     r2 = f2.Invoke({})
-    print(r2)
-    # if r2['deviceID'] == r0['deviceID']:
-    #     print("FAIL")
-    #     print("Didn't get free device after re-allocation")
-    #     print(r0)
-    #     print(r2)
-    #     return
+    if r2['deviceID'] == r0['deviceID'] or r2['deviceID'] == r1['deviceID']:
+        # In theory this isn't completely valid, it's possible that libff
+        # killed client0's executor and re-used the GPU. In practice, it's not
+        # going to do this (until it does at which point we'll have to fix this
+        # test).
+        print("FAIL: New client got old GPU")
+        print("client0, func0:", r0)
+        print("client0, func1:", r1)
+        print("client1, func0:", r2)
+        return
 
-    print("PASS")
+    # The test system only has 2 GPUs, libff is gonna have to kill an executor
+    # for this to work.
+    f3 = funcType(workerPath, "cuda", ctx, clientID=2, enableGpu=True)
+    r3 = f3.Invoke({})
 
+    return True
+
+
+# XXX this test isn't strictly valid. libff is free to give a new executor on
+# each invocation if it chooses which would break this test. In practice,
+# without heavy load it won't.
 def testState(mode):
     ctx = libff.invoke.RemoteCtx(None, None)
 
     if mode == 'process':
-        func = libff.invoke.ProcessRemoteFunc(workerPath, "state", ctx)
+        funcType = libff.invoke.ProcessRemoteFunc
     else:
-        func = libff.invoke.DirectRemoteFunc(workerPath, "state", ctx)
+        funcType = libff.invoke.DirectRemoteFunc
+    f0 = funcType(workerPath, "state", ctx)
 
-
-    resp = func.Invoke({"scratchData" : "firstData"})
+    resp = f0.Invoke({"scratchData" : "firstData"})
     if resp['cachedData'] != 'firstData':
         print("FAIL: First invoke didn't return scrach data")
         return False
 
-    resp = func.Invoke({})
+    resp = f0.Invoke({})
     if resp['cachedData'] != 'firstData':
         print("FAIL: function didn't cache data")
         return False
 
-    resp = func.Invoke({"scratchData" : "secondData"})
+    resp = f0.Invoke({"scratchData" : "secondData"})
     if resp['cachedData'] != 'secondData':
         print("FAIL: function didn't return new data")
         return False
 
-    resp = func.Invoke({})
+    resp = f0.Invoke({})
     if resp['cachedData'] != 'secondData':
         print("FAIL: function didn't replace cache data")
         return False
 
-    print("PASS")
+    # New clients need to get new executors
+    f1 = funcType(workerPath, "state", ctx, clientID=1)
+    resp = f1.Invoke({})
+    if resp['cachedData'] is not None:
+        print("FAIL: new client ID got old client's cached data")
+        return False
+
     return True
 
 
@@ -169,7 +184,6 @@ def stats(mode='direct'):
         print("Wrong client stats got reset")
         return False
 
-    print("stats: PASS")
     return True
 
 
@@ -179,22 +193,29 @@ def testAsync():
     func = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx)
 
     start = time.time()
-    fut0 = func.InvokeAsync({"runtime" : 1})
-    fut1 = func.InvokeAsync({"runtime" : 1})
+    fut0 = func.InvokeAsync({"runtime" : 1000})
+    fut1 = func.InvokeAsync({"runtime" : 1000})
     reqFinishTime = time.time() - start
 
     start = time.time()
     resp1 = fut1.get()
-    resp2 = func.Invoke({"runtime" : 1})
     resp0 = fut0.get()
-    funcRuntime = time.time() - start
+    asyncRuntime = time.time() - start
+
+    start = time.time()
+    resp2 = func.Invoke({"runtime" : 1000})
+    syncRuntime = time.time() - start
 
     if reqFinishTime >= 1:
         print("Async FAIL: InvokeAsync didn't return immediately")
         return False
 
-    if funcRuntime < 1:
+    if asyncRuntime < 1:
         print("Async FAIL: Future returned too soon")
+        return False
+
+    if syncRuntime < 1:
+        print("Async FAIL: synchronous call returned too soon")
         return False
 
     respVals = [resp0['validateMetric'], resp1['validateMetric'], resp2['validateMetric']]
@@ -203,18 +224,29 @@ def testAsync():
         print(respVals)
         return False
 
-    print("Async: PASS")
     return True
 
 if __name__ == "__main__":
-    testCuda(mode='process')
+    # print("Basic Hello World Test:")
+    # helloWorld()
+    # print("PASS")
+    #
+    print("Testing GPU support")
+    if not testCuda(mode='process'):
+        sys.exit(1)
+    print("PASS")
+    #
+    # print("Testing Stats")
     # if not stats(mode='direct'):
     #     sys.exit(1)
-
-    # helloWorld()
+    # print("PASS")
     #
+    # print("Testing Async")
     # if not testAsync():
     #     sys.exit(1)
-    #
+    # print("PASS")
+
+    # print("Testing Private State")
     # if not testState('process'):
     #     sys.exit(1)
+    # print("PASS")

@@ -443,7 +443,7 @@ class ProcessRemoteFunc(RemoteFunc):
         workerStats = proc.recv(msgID, self.funcID)
 
         if self.stats is None:
-            return {}
+            return None
         else:
             self.stats.mod('worker').merge(workerStats)
             return self.stats

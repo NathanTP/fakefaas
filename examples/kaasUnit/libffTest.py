@@ -23,8 +23,9 @@ def getCtx(remote=False):
 
 
 def testDoublify(mode='direct'):
+    stats = ff.util.profCollection()
     libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.getHandle(mode, libffCtx)
+    kaasHandle = kaas.getHandle(mode, libffCtx, stats=stats)
 
     testArray = np.random.randn(16).astype(np.float32)
     origArray = testArray.copy()
@@ -63,7 +64,8 @@ def testDoublify(mode='direct'):
         print("PASS")
 
     print("Stats: ")
-    print(kaasHandle.Stats())
+    print(kaasHandle.getStats())
+
 
 def testDotProd(mode='direct'):
     nElem = 1024
@@ -119,9 +121,6 @@ def testDotProd(mode='direct'):
     else:
         print("PASS")
 
-    print("Stats: ")
-    pprint(kaasHandle.getStats().report())
-
 
 rng = np.random.default_rng()
 def generateArr(shape):
@@ -171,13 +170,14 @@ def testMatMul(mode='direct'):
     libffCtx.kv.delete("B")
     libffCtx.kv.delete("C")
 
-    # I'm not sure why the results are different in the LSDs but I assume it's
-    # just different rounding due to the different implementations (operations
-    # on floats are not strictly transitive)
-    cArr = cArr.round(4)
     npArr = np.matmul(arrA, arrB).round(4)
-    if(not np.array_equal(cArr, npArr)):
+
+    # lots of rounding error in float32 matmul, use euclidean distance to make
+    # sure we're close. Usually if something goes wrong, it goes very wrong.
+    dist = np.linalg.norm(cArr - npArr)
+    if dist > 10:
         print("FAIL:")
+        print("Distance: ",dist)
         print("A:\n", arrA)
         print("B:\n", arrB)
         print("KaaS Result:")
@@ -190,12 +190,12 @@ def testMatMul(mode='direct'):
         print("PASS")
 
 if __name__ == "__main__":
-    # print("Double Test:")
-    # testDoublify('direct')
+    mode = 'process'
+    print("Double Test:")
+    testDoublify(mode)
 
     print("Dot Product Test:") 
-    testDotProd('direct')
+    testDotProd(mode)
 
-    # print("MatMul Test")
-    # testMatMul('direct')
-    # testMatMul('process')
+    print("MatMul Test")
+    testMatMul(mode)

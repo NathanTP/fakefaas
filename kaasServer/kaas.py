@@ -179,9 +179,9 @@ def getHandle(mode, ctx, stats=None):
     """Returns a libff RemoteFunc object representing the KaaS service"""
     if mode == 'direct':
         # return libff.invoke.DirectRemoteFunc(serverPackage / '__init__.py', 'invoke', ctx)
-        return libff.invoke.DirectRemoteFunc(serverPackage, 'invoke', ctx, stats=stats)
+        return libff.invoke.DirectRemoteFunc(serverPackage, 'invoke', ctx, clientID=-1, stats=stats)
     elif mode == 'process':
-        return libff.invoke.ProcessRemoteFunc(serverPackage, 'invoke', ctx, stats=stats)
+        return libff.invoke.ProcessRemoteFunc(serverPackage, 'invoke', ctx, clientID=-1, stats=stats)
     else:
         raise KaasError("Unrecognized execution mode: " + str(mode))
 

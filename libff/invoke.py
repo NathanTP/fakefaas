@@ -431,7 +431,8 @@ class ProcessRemoteFunc(RemoteFunc):
         reference to it. You must call this to ensure that all statistics are
         available, otherwise you may only have partial results. getStats() is
         idempotent"""
-        proc = _processExecutors.getExecutor(self.packagePath, self.clientID, self.funcID)
+        #XXX strictly speaking, it's possible to get a different executor here, not sure how to deal with it
+        proc = _processExecutors.getExecutor(self.packagePath, self.clientID, enableGpu=self.enableGpu)
         statsReq = {
                 'command' : 'reportStats',
                 # We always reset the worker since we now have those stats in

@@ -8,23 +8,20 @@ from libff import kv, array, invoke
 
 workerPath = pathlib.Path(__file__).parent.resolve() / "worker.py"
 
-def helloWorld():
+def helloWorld(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
-    # func = libff.invoke.DirectRemoteFunc(workerPath, "echo", ctx)
-    func = libff.invoke.ProcessRemoteFunc(workerPath, "echo", ctx)
+
+    func = constructor(workerPath, "echo", ctx)
+
     resp = func.Invoke({"hello" : "world"})
     print(resp)
 
 
-def testCuda(mode):
+def testCuda(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
 
-    if mode == 'process':
-        funcType = libff.invoke.ProcessRemoteFunc
-    else:
-        funcType = libff.invoke.DirectRemoteFunc
-    f0 = funcType(workerPath, "cuda", ctx, enableGpu=True)
-    f1 = funcType(workerPath, "cuda", ctx, enableGpu=True)
+    f0 = constructor(workerPath, "cuda", ctx, enableGpu=True)
+    f1 = constructor(workerPath, "cuda", ctx, enableGpu=True)
 
     # Make sure multiple functions for the same client work
     r0 = f0.Invoke({})
@@ -35,9 +32,8 @@ def testCuda(mode):
         print(r1)
         return True
 
-
     # Different clients should get different devices
-    f2 = funcType(workerPath, "cuda", ctx, clientID=1, enableGpu=True)
+    f2 = constructor(workerPath, "cuda", ctx, clientID=1, enableGpu=True)
     r2 = f2.Invoke({})
     if r2['deviceID'] == r0['deviceID'] or r2['deviceID'] == r1['deviceID']:
         # In theory this isn't completely valid, it's possible that libff
@@ -52,7 +48,7 @@ def testCuda(mode):
 
     # The test system only has 2 GPUs, libff is gonna have to kill an executor
     # for this to work.
-    f3 = funcType(workerPath, "cuda", ctx, clientID=2, enableGpu=True)
+    f3 = constructor(workerPath, "cuda", ctx, clientID=2, enableGpu=True)
     r3 = f3.Invoke({})
 
     return True
@@ -61,14 +57,10 @@ def testCuda(mode):
 # XXX this test isn't strictly valid. libff is free to give a new executor on
 # each invocation if it chooses which would break this test. In practice,
 # without heavy load it won't.
-def testState(mode):
+def testState(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
 
-    if mode == 'process':
-        funcType = libff.invoke.ProcessRemoteFunc
-    else:
-        funcType = libff.invoke.DirectRemoteFunc
-    f0 = funcType(workerPath, "state", ctx)
+    f0 = constructor(workerPath, "state", ctx)
 
     resp = f0.Invoke({"scratchData" : "firstData"})
     if resp['cachedData'] != 'firstData':
@@ -91,7 +83,7 @@ def testState(mode):
         return False
 
     # New clients need to get new executors
-    f1 = funcType(workerPath, "state", ctx, clientID=1)
+    f1 = constructor(workerPath, "state", ctx, clientID=1)
     resp = f1.Invoke({})
     if resp['cachedData'] is not None:
         print("FAIL: new client ID got old client's cached data")
@@ -119,18 +111,14 @@ def _runStatsFunc(func, runTime):
 
     return (stats, measured)
 
-def stats(mode='direct'):
+def stats(constructor):
     sleepTime = 1000
     repeat = 2
     ctx = libff.invoke.RemoteCtx(None, None)
 
     stats = libff.profCollection()
-    if mode == 'direct':
-        f1 = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
-        f2 = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
-    else:
-        f1 = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
-        f2 = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
+    f1 = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
+    f2 = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
 
     #==========================================================================
     # Cold start and single function behavior 
@@ -187,10 +175,9 @@ def stats(mode='direct'):
     return True
 
 
-def testAsync():
+def testAsync(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
-    # func = libff.invoke.ProcessRemoteFunc(workerPath, "perfSim", ctx)
-    func = libff.invoke.DirectRemoteFunc(workerPath, "perfSim", ctx)
+    func = constructor(workerPath, "perfSim", ctx)
 
     start = time.time()
     fut0 = func.InvokeAsync({"runtime" : 1000})
@@ -227,26 +214,29 @@ def testAsync():
     return True
 
 if __name__ == "__main__":
-    # print("Basic Hello World Test:")
-    # helloWorld()
-    # print("PASS")
-    #
+    funcConstructor = libff.invoke.ProcessRemoteFunc
+    # funcConstructor = libff.invoke.DirectRemoteFunc
+
+    print("Basic Hello World Test:")
+    helloWorld(funcConstructor)
+    print("PASS")
+
     print("Testing GPU support")
-    if not testCuda(mode='process'):
+    if not testCuda(funcConstructor):
         sys.exit(1)
     print("PASS")
-    #
-    # print("Testing Stats")
-    # if not stats(mode='direct'):
-    #     sys.exit(1)
-    # print("PASS")
-    #
-    # print("Testing Async")
-    # if not testAsync():
-    #     sys.exit(1)
-    # print("PASS")
 
-    # print("Testing Private State")
-    # if not testState('process'):
-    #     sys.exit(1)
-    # print("PASS")
+    print("Testing Stats")
+    if not stats(funcConstructor):
+        sys.exit(1)
+    print("PASS")
+
+    print("Testing Async")
+    if not testAsync(funcConstructor):
+        sys.exit(1)
+    print("PASS")
+
+    print("Testing Private State")
+    if not testState(funcConstructor):
+        sys.exit(1)
+    print("PASS")

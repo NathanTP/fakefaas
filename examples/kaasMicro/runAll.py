@@ -12,8 +12,8 @@ niter = 2
 
 modes = ['direct', 'process']
 clientTypes = ['kaas', 'faas', 'local']
-# sizes = ['small', 'large']
-sizes = ['small']
+sizes = ['small', 'large']
+# sizes = ['small']
 preprocess = [None, 'low', 'high']
 preInlineOpts = [ True, False ]
 
@@ -22,6 +22,9 @@ paramIter = itertools.product(modes, clientTypes, sizes, preprocess, preInlineOp
 for (mode, client, size, preTime, preInline) in paramIter:
     if preInline and client != 'faas':
         # preInline is only valid in faas mode, no point running it for other clients
+        continue
+
+    if preInline and preTime is None:
         continue
 
     cmd = ['./benchmark.py', "-w", client, "-s", size, "-m", mode, "-n", str(niter), '--output', str(outFile)]

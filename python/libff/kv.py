@@ -120,7 +120,7 @@ class Local(kv):
             try:
                 raw = self.store[k]
             except KeyError:
-                return None
+                raise KVKeyError(k)
 
         with timer("t_deserialize", profile, final=profFinal):
             if self.serialize:

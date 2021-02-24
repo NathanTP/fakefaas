@@ -4,7 +4,7 @@ import sys
 from pprint import pprint
 
 import libff
-from libff import kv, array, invoke
+from libff import invoke
 
 workerPath = pathlib.Path(__file__).parent.resolve() / "worker.py"
 
@@ -261,10 +261,13 @@ if __name__ == "__main__":
     helloWorld(funcConstructor)
     print("PASS")
 
-    print("Testing GPU support")
-    if not testCuda(funcConstructor):
-        sys.exit(1)
-    print("PASS")
+    if invoke.cudaAvailable:
+        print("Testing GPU support")
+        if not testCuda(funcConstructor):
+            sys.exit(1)
+        print("PASS")
+    else:
+        print("GPU support unavailable, skipping test")
 
     print("Testing Stats")
     if not stats(funcConstructor):

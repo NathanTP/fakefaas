@@ -1,12 +1,14 @@
 import pathlib
 import math
 from pprint import pprint
+import sys
 
 import libff as ff
 import libff.kv
 import libff.invoke
 
-import kaasServer as kaas
+# import kaasServer as kaas
+import libff.kaas as kaas
 import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
@@ -190,7 +192,16 @@ def testMatMul(mode='direct'):
         print("PASS")
 
 if __name__ == "__main__":
-    mode = 'process'
+    if len(sys.argv) != 2:
+        print("Usage: ./kaasTest.py ['direct'|'process']")
+        sys.exit(1)
+    else:
+        mode = sys.argv[1]
+
+    if not libff.invoke.cudaAvailable:
+        print("KaaS requires CUDA support from libff")
+        sys.exit(1)
+
     print("Double Test:")
     testDoublify(mode)
 

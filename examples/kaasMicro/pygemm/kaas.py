@@ -1,4 +1,4 @@
-import kaasServer
+import libff.kaas
 
 from .util import *
 
@@ -9,7 +9,7 @@ class mmFunc():
         """Buffer args to various mmFunc methods can be ndarray, or kaasBuf,
         this converts them all to a kaasBuf as appropriate. If arg is not
         already a kaasBuf, a new one will be created with const=const."""
-        if isinstance(arg, kaasServer.bufferSpec):
+        if isinstance(arg, libff.kaas.bufferSpec):
             return arg
         elif isinstance(arg, np.ndarray):
             # The current benchmark does not count uploads from the client
@@ -20,7 +20,7 @@ class mmFunc():
             raise RuntimeError("Unrecognized type (must be either ndarray or kaas.bufferSpec): " + str(type(arg)))
 
         # None and ndarray need to generate a bufferSpec
-        buf = kaasServer.bufferSpec(self.name + "_" + bname, shape[0]*shape[1] * 4, const=const)
+        buf = libff.kaas.bufferSpec(self.name + "_" + bname, shape[0]*shape[1] * 4, const=const)
         self.generatedBufs.append(buf.name)
         return buf
 
@@ -57,7 +57,7 @@ class mmFunc():
         # dims is a property of a multiplier function, not any particular
         # invocation. We upload it at registration time.
         self.ffCtx.kv.put(self.name+"_dims", np.asarray(list(self.aShape) + list(self.bShape), dtype=np.uint64))
-        self.dimBuf = kaasServer.bufferSpec(self.name + "_dims", 4*8, const=True)
+        self.dimBuf = libff.kaas.bufferSpec(self.name + "_dims", 4*8, const=True)
         self.generatedBufs.append(self.dimBuf.name)
 
         if mmKern == 'sgemm':
@@ -94,7 +94,7 @@ class mmFunc():
 
         cBuf = self._bufArgToBuf(cData, 'c', self.cShape)
 
-        return kaasServer.kernelSpec(kernsDir / 'gemm.cubin',
+        return libff.kaas.kernelSpec(kernsDir / 'gemm.cubin',
             mmKern,
             self.gridDim, self.blockDim, sharedSize=self.sharedSize,
             inputs = [self.dimBuf, aBuf, bBuf],
@@ -108,7 +108,7 @@ class mmFunc():
         getKernFunc() for details of the data arguments."""
         kern = self.getKernFunc(aData, bData, cData)
 
-        req = kaasServer.kaasReq([ kern ])
+        req = libff.kaas.kaasReq([ kern ])
         with libff.timer("t_client_invoke", self.stats):
             self.kHandle.Invoke(req.toDict())
 
@@ -184,11 +184,11 @@ class ChainedMults():
         if isinstance(inBuf, np.ndarray):
             with ff.timer("t_write_input", self.stats):
                 self.ffCtx.kv.put(self.name+"_l0_a", inBuf)
-            inBuf = kaasServer.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
+            inBuf = libff.kaas.bufferSpec(self.name+"_l0_a", mmShape.nbytes(self.shapes[0].a))
             generatedInput = True
 
         if outBuf is None:
-            outBuf = kaasServer.bufferSpec(self.name+"_out", mmShape.nbytes(self.shapes[-1].c))
+            outBuf = libff.kaas.bufferSpec(self.name+"_out", mmShape.nbytes(self.shapes[-1].c))
 
         kerns = []
         nextIn = inBuf
@@ -196,7 +196,7 @@ class ChainedMults():
             if i == len(self.funcs) - 1:
                 cBuf = outBuf
             else:
-                cBuf = kaasServer.bufferSpec(self.name+"_l"+str(i)+"_c",  mmShape.nbytes(self.shapes[i].c), ephemeral=True)
+                cBuf = libff.kaas.bufferSpec(self.name+"_l"+str(i)+"_c",  mmShape.nbytes(self.shapes[i].c), ephemeral=True)
 
             kerns.append(f.getKernFunc(aData = nextIn, cData = cBuf))
             nextIn = cBuf
@@ -206,7 +206,7 @@ class ChainedMults():
                 self.preFunc.Invoke({"input" : inBuf.name, "output" : inBuf.name, "processTime" : self.preTime})
             
         with ff.timer("t_invoke", self.stats):
-            req = kaasServer.kaasReq(kerns)
+            req = libff.kaas.kaasReq(kerns)
             self.kHandle.Invoke(req.toDict())
 
         if generatedInput:
@@ -267,7 +267,7 @@ class benchClient():
             self.stats = stats
         self.kvStats = self.stats.mod('kv')
 
-        self.kaas = kaasServer.getHandle(mode, self.ff, stats=self.stats.mod('kaas'))
+        self.kaas = libff.kaas.getHandle(mode, self.ff, stats=self.stats.mod('kaas'))
 
         # Used to name any generated arrays
         self.nextArrayID = 0
@@ -292,6 +292,33 @@ class benchClient():
             self.lastRetKey = self.func.invoke(inArr)
         return self.lastRetKey
 
+
+    def _invokeLoop_sync(self, n, inBufs):
+        for i in range(n):
+            if self.rng is not None:
+                time.sleep(self.rng() / 1000)
+
+            self.invoke(inBufs[ i % len(inBufs) ])
+            # if fetchResult:
+            #     # Read the result and immediately discard to include result
+            #     # reading time in the benchmark
+            #     self.getResult()
+
+            self.ff.kv.delete(self.lastRetKey)
+
+
+    def _invokeLoop_async(self, n, inBufs):
+        for i in range(n):
+            if self.rng is not None:
+                time.sleep(self.rng() / 1000)
+
+            self.invoke(inBufs[ i % len(inBufs) ])
+            # if fetchResult:
+            #     # Read the result and immediately discard to include result
+            #     # reading time in the benchmark
+            #     self.getResult()
+
+            self.ff.kv.delete(self.lastRetKey)
 
     def invokeN(self, n, inArrs=1, fetchResult=False):
         """Invoke the client n times, waiting self.rng() ms inbetween
@@ -331,20 +358,9 @@ class benchClient():
             deleteInputs = True
 
         # Convert to kaas buffer spec
-        inBufs = [ kaasServer.bufferSpec(name, mmShape.nbytes(self.shapes[0].a)) for name in inNames ]
+        inBufs = [ libff.kaas.bufferSpec(name, mmShape.nbytes(self.shapes[0].a)) for name in inNames ]
 
-        # Core invocation loop, we round-robin the inBufs
-        for i in range(n):
-            if self.rng is not None:
-                time.sleep(self.rng() / 1000)
-
-            self.invoke(inBufs[ i % len(inBufs) ])
-            if fetchResult:
-                # Read the result and immediately discard to include result
-                # reading time in the benchmark
-                self.getResult()
-
-            self.ff.kv.delete(self.lastRetKey)
+        self._invokeLoop_sync(n, inBufs)
 
         if deleteInputs:
             for key in inNames:
@@ -383,14 +399,14 @@ class benchClient():
         """Buffer args to various mmFunc methods can be ndarray or kaasBuf,
         this converts them all to a kaasBuf as appropriate. If arg is not
         already a kaasBuf, a new one will be created with const=const."""
-        if isinstance(arg, kaasServer.bufferSpec):
+        if isinstance(arg, libff.kaas.bufferSpec):
             return arg
         elif isinstance(arg, np.ndarray):
             arrName = self.name + "_array" + str(self.nextArrayID)
             self.nextArrayID += 1
 
             self.ff.kv.put(arrName, arg)
-            b = kaasServer.bufferSpec(arrName, arg.nbytes)
+            b = libff.kaas.bufferSpec(arrName, arg.nbytes)
             self.generatedBufs.append(b.name)
             return b
         else:

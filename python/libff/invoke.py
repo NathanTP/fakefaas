@@ -124,8 +124,15 @@ class DirectRemoteFunc(RemoteFunc):
 
     def __init__(self, packagePath, funcName, context: RemoteCtx, clientID=0, stats=None, enableGpu=False):
         self.fName = funcName
-        self.packagePath = packagePath
         self.clientID = clientID
+
+        # From now on, if packagePath is a pathlib object, it's actually a
+        # path. If it's a string, then it's a module name rather than a
+        # filesystem path.
+        if os.path.exists(packagePath):
+            self.packagePath = pathlib.Path(packagePath)
+        else:
+            self.packagePath = packagePath
 
         # The profs in ctx are used only for passing to the function,
         # self.stats is for the client-side RemoteFun
@@ -156,11 +163,15 @@ class DirectRemoteFunc(RemoteFunc):
                 if self.packagePath in _importedFuncPackages:
                     self.funcs = _importedFuncPackages[self.packagePath]
                 else:
-                    name = self.packagePath.stem
-                    if self.packagePath.is_dir():
-                        self.packagePath = self.packagePath / "__init__.py"
+                    if isinstance(self.packagePath, pathlib.Path):
+                        name = self.packagePath.stem
+                        if self.packagePath.is_dir():
+                            self.packagePath = self.packagePath / "__init__.py"
 
-                    spec = importlib.util.spec_from_file_location(name, self.packagePath)
+                        spec = importlib.util.spec_from_file_location(name, self.packagePath)
+                    else:
+                        spec = importlib.util.find_spec(self.packagePath)
+
                     if spec is None:
                         raise RuntimeError("Failed to load function from " + str(self.packagePath))
 
@@ -225,10 +236,15 @@ class _processExecutor():
         # a module, you have to run it with -m, but if it's a
         # stand-alone file, you can't use -m and have to call it
         # directly.
-        if self.packagePath.is_dir():
-            cmd = ["python3", "-m", str(self.packagePath.name)]
-        else:
+
+        # if it's a module name, we still treat it like a path since everything
+        # will still work.
+        self.packagePath = pathlib.Path(self.packagePath)
+        if self.packagePath.is_file():
             cmd = ["python3", str(self.packagePath.name)]
+        else:
+            # Could be a real path or it could be an installed package
+            cmd = ["python3", "-m", str(self.packagePath.name)]
 
         if self.arrayMnt is not None:
             cmd += ['-m', self.arrayMnt]
@@ -238,7 +254,7 @@ class _processExecutor():
 
         self.proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, text=True, cwd=self.packagePath.parent)
         self.ready = False
-        self.blocking = True 
+        self.blocking = True
 
 
     def _setBlock(self, block):

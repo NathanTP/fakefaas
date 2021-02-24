@@ -131,6 +131,46 @@ def testClient(mode, clientType):
         print("PASS")
 
 
+def testThroughput(mode, clientType):
+    libffCtx = pygemm.getCtx(remote=(mode == 'process'))
+
+    stats = libff.profCollection()
+    if clientType == 'faas':
+        client = pygemm.faas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
+    elif clientType == 'kaas':
+        client = pygemm.kaas.benchClient("benchClientTest", 4, 1024, libffCtx, mode=mode, stats=stats)
+    else:
+        client = pygemm.local.benchClient("benchClientTest", 4, 1024, ffCtx=libffCtx, stats=stats)
+
+    # benchclients manage most of the experiment themselves so we can't really
+    # verify correctness (we trust testChained to do that). But we will make
+    # sure the basic API runs without crashing.
+
+    inArr = pygemm.generateArr(client.shapes[0].a)
+    client.invoke(inArr)
+    testOut = client.getResult()
+    
+    client.resetStats()
+
+    start = time.time()
+    client.invokeN(2)
+    tInvoke = time.time() - start 
+
+    stats = client.getStats().report()
+    client.destroy()
+    
+    reported = stats['t_invoke']
+    measured = (tInvoke / 2)*1000
+    if (measured / reported) < 0.5:
+        print("FAIL")
+        print("Measured time significantly different than reported time: ")
+        print("\tMeasured: ", measured)
+        print("\tReported: ", reported)
+    else:
+        print("PASS")
+
+
+
 @contextmanager
 def testenv(testName, mode, clientType):
     if mode == 'process':

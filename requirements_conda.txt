@@ -1,2 +1,0 @@
-# for some reason the tensorflow from pip doesn't work, gotta use the one from conda
-tensorflow-gpu

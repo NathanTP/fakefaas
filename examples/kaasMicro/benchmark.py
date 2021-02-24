@@ -16,9 +16,7 @@ import redis
 import libff as ff
 import libff.kv
 import libff.invoke
-
-# import kaasServer as kaas
-import kaasServer
+import libff.kaas
 
 import pygemm
 import pygemm.kaas
@@ -26,9 +24,9 @@ import pygemm.kaas
 
 def startKaas(ffCtx, mode='direct'):
     """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
-    kaasHandle = kaasServer.getHandle(mode, ffCtx)
-    kern = kaasServer.kernelSpec(pygemm.kernsDir / 'noop.cubin', 'noop', (1,1,1), (1,1,1))
-    kaasHandle.Invoke(kaasServer.kaasReq([kern]).toDict())
+    kaasHandle = libff.kaas.getHandle(mode, ffCtx)
+    kern = libff.kaas.kernelSpec(pygemm.kernsDir / 'noop.cubin', 'noop', (1,1,1), (1,1,1))
+    kaasHandle.Invoke(libff.kaas.kaasReq([kern]).toDict())
 
 
 def cleanStats(rawStats, config):

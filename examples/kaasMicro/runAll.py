@@ -12,8 +12,8 @@ niter = 2
 
 modes = ['direct', 'process']
 clientTypes = ['kaas', 'faas', 'local']
-sizes = ['small', 'large']
-# sizes = ['small']
+# sizes = ['small', 'large']
+sizes = ['small']
 preprocess = [None, 'low', 'high']
 preInlineOpts = [ True, False ]
 

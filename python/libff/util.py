@@ -2,6 +2,12 @@ import collections.abc
 import time
 from contextlib import contextmanager
 import jsonpickle as json
+import pathlib
+import subprocess as sp
+import redis
+
+redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
+redisConf = pathlib.Path('../../../redis.conf')
 
 class prof():
     def __init__(self, fromDict=None):
@@ -151,3 +157,34 @@ def reportTimers(times):
 
 def printTimers(times):
     print(json.dumps(reportTimers(times), indent=4))
+
+
+class TestError(Exception):
+    def __init__(self, testName, msg):
+        self.testName = testName
+        self.msg = msg
+
+    def __str__(self):
+        return "Test {} failed: {}".format(self.testName, self.msg)
+
+
+@contextmanager
+def testenv(testName, mode):
+    """This is useful for testing. For process mode, it ensures that redis is
+    up and running and kills it after the test."""
+    if mode == 'process':
+        redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
+
+    try:
+        # Redis takes a sec to boot up
+        time.sleep(0.1)
+        yield
+    except redis.exceptions.ConnectionError as e:
+        redisProc.terminate()
+        serverOut = redisProc.stdout.read()
+        raise TestError(testName, str(e) + ": " + serverOut)
+
+    if mode == 'process':
+        redisProc.terminate()
+        # It takes a while for redis to release the port after exiting
+        time.sleep(0.5)

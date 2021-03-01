@@ -3,33 +3,17 @@ import math
 from pprint import pprint
 import time
 import numpy as np
-import csv
 import argparse
-import subprocess as sp
 import itertools
-from contextlib import contextmanager
 import sys
-
-# Just to get its exception type
-import redis
 
 import libff as ff
 import libff.kv
 import libff.invoke
-
-# import kaasServer as kaas
-import kaasServer
+import libff.kaas as kaas
 
 import pygemm
 import pygemm.kaas
-
-class TestError(Exception):
-    def __init__(self, testName, msg):
-        self.testName = testName
-        self.msg = msg
-
-    def __str__(self):
-        return "Test {} failed: {}".format(self.testName, self.msg)
 
 def _testChainedOne(name, mode, clientType, shapes, libffCtx, kaasHandle):
     inArr = pygemm.generateArr(shapes[0].a)
@@ -69,7 +53,7 @@ def testChained(mode, clientType):
             pygemm.mmShape(128,512,256) ]
 
     if clientType == 'kaas':
-        kaasHandle = kaasServer.getHandle(mode, libffCtx)
+        kaasHandle = kaas.getHandle(mode, libffCtx)
     else:
         kaasHandle = None
 
@@ -170,29 +154,6 @@ def testThroughput(mode, clientType):
         print("PASS")
 
 
-
-@contextmanager
-def testenv(testName, mode, clientType):
-    if mode == 'process':
-        redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
-
-    try:
-        yield
-    except redis.exceptions.ConnectionError as e:
-        pass
-        redisProc.terminate()
-        serverOut = redisProc.stdout.read()
-        raise TestError(testName, str(e) + ": " + serverOut)
-
-    if mode == 'process':
-        redisProc.terminate()
-        # It takes a while for redis to release the port after exiting
-        time.sleep(0.5)
-
-    # Resets most of the state internal to libff.invoke (at least for process
-    # mode, direct mode can't really clean up the packages unfortunately
-    ff.invoke.DestroyFuncs()
-
 if __name__ == "__main__":
     clientTypes = ['kaas', 'faas', 'local']
     modes = ['direct', 'process']
@@ -213,11 +174,11 @@ if __name__ == "__main__":
 
     for (mode, clientType) in itertools.product(modes, clientTypes):
         benchName = "_".join(["chained", mode, clientType])
-        with testenv(benchName, mode, clientType):
+        with ff.testenv(benchName, mode):
             print(benchName)
             testChained(mode, clientType)
 
         benchName = "_".join(["client", mode, clientType])
-        with testenv(benchName, mode, clientType):
+        with ff.testenv(benchName, mode):
             print(benchName)
             testClient(mode, clientType)

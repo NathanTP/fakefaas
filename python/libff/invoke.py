@@ -526,7 +526,7 @@ def RemoteProcessServer(funcs, serverArgs):
     else:
         arrStore = None
 
-    objStore = kv.Redis(pwd="Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy", serialize=True)
+    objStore = kv.Redis(pwd=util.redisPwd, serialize=True)
     ctx = RemoteCtx(arrStore, objStore)
 
     # Global stats are maintained to keep stats reporting off the critical path

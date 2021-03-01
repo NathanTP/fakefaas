@@ -1,39 +1,15 @@
 import libff as ff
 import libff.kv
 import numpy as np
-import ctypes
 import time
-import redis
-from contextlib import contextmanager
-import subprocess as sp
 import sys
-
-@contextmanager
-def testenv(testName, mode):
-    if mode == 'process':
-        redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
-
-    try:
-        yield
-    except redis.exceptions.ConnectionError as e:
-        pass
-        redisProc.terminate()
-        serverOut = redisProc.stdout.read()
-        raise TestError(testName, str(e) + ": " + serverOut)
-
-    if mode == 'process':
-        redisProc.terminate()
-        # It takes a while for redis to release the port after exiting
-        time.sleep(0.5)
-
 
 # Tests the most basic put/get/delete interface on default options for the kv
 def testSimple(mode):
     if mode == 'direct':
         kv = ff.kv.Local()
     else:
-        redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
-        kv = ff.kv.Redis(pwd=redisPwd, serialize=True)
+        kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
     a = np.arange(10, dtype=np.uint32)
 
@@ -71,8 +47,7 @@ def testCopy(mode):
     if mode == 'direct':
         kv = ff.kv.Local(copyObjs=True)
     else:
-        redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
-        kv = ff.kv.Redis(pwd=redisPwd, serialize=True)
+        kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
     a = np.arange(10, dtype=np.uint32)
     kv.put('testSimpleA', a)
@@ -92,11 +67,9 @@ def testCopy(mode):
     return True
 
 def main():
-    mode = 'process'
-
     for mode in ['direct', 'process']:
         print("Running simple test (" + mode + "):")
-        with testenv('simple', mode):
+        with ff.testenv('simple', mode):
             success = testSimple(mode)
 
         if success:
@@ -105,7 +78,7 @@ def main():
             sys.exit(1)
 
         print("Running copy test (" + mode + "):")
-        with testenv('copy', mode):
+        with ff.testenv('copy', mode):
             success = testCopy(mode)
 
         if success:

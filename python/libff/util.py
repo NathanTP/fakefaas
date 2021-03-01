@@ -7,7 +7,7 @@ import subprocess as sp
 import redis
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
-redisConf = pathlib.Path('../../../redis.conf')
+redisConf = pathlib.Path(__file__).parent / 'redis.conf'
 
 class prof():
     def __init__(self, fromDict=None):

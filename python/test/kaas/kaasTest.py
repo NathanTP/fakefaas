@@ -203,10 +203,13 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print("Double Test:")
-    testDoublify(mode)
+    with ff.testenv('simple', mode):
+        testDoublify(mode)
 
     print("Dot Product Test:") 
-    testDotProd(mode)
+    with ff.testenv('simple', mode):
+        testDotProd(mode)
 
     print("MatMul Test")
-    testMatMul(mode)
+    with ff.testenv('simple', mode):
+        testMatMul(mode)

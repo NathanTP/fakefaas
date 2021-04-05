@@ -9,7 +9,7 @@ import types
 import libff as ff
 import libff.kv
 import libff.invoke
-import kaasServer as kaas
+import libff.kaas as kaas
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 

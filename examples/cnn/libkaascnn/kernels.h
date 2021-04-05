@@ -15,7 +15,7 @@ __global__ void makeError(float *err, float *output, unsigned int Y, const int N
 __global__ void apply_grad(float *output, float *grad, const int N);
 
 // Forward propagation kernels
-extern "C" __global__ void fp_preact_c0(float input[28][28], float weight[6][5][5], float preact[6][24][24]);
+extern "C" __global__ void fp_preact_c1(float input[28][28], float weight[6][5][5], float preact[6][24][24]);
 extern "C" __global__ void fp_bias_c1(float bias[6], float preact[6][24][24]);
 extern "C" __global__ void fp_preact_s1(float input[6][24][24], float weight[1][4][4], float preact[6][6][6]);
 extern "C" __global__ void fp_bias_s1(float bias[1], float preact[6][6][6]);

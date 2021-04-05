@@ -1,4 +1,7 @@
 import redis
+import anna.client
+import anna.lattices
+import time
 import pickle
 import abc
 import copy
@@ -88,6 +91,64 @@ class Redis(kv):
     def destroy(self):
         self.handle.client_kill_filter(_id=self.handle.client_id())
 
+class Anna(kv):
+    """A thin wrapper over a subset of anna functionality. Anna is assumed to
+       be running locally on the default port."""
+    def __init__(self, elb_addr, ip, local=False, offset=0, serialize=True):
+        '''
+        The AnnaClient allows you to interact with a local 
+        copy of Anna or with a remote cluster running on AWS.
+        elb_addr: Either 127.0.0.1 (local mode) or the address of an AWS ELB
+        for the routing tier
+        ip: The IP address of the machine being used -- if None is provided,
+        one is inferred by using socket.gethostbyname(); WARNING: this does not
+        always work
+        local: Whether it is local mode or remote mode
+        offset: A port numbering offset, which is only needed if multiple
+        clients are running on the same machine
+        serialize: Objects must be bytes-like if serialize=False
+        '''
+        self.handle = anna.client.AnnaTcpClient(elb_addr, ip, local, offset)
+        self.serialize = serialize
+    
+
+    def get_time(self):
+        """ Helper function to get the current time in microseconds. """
+        return round(time.time() * 10**6)
+
+
+    def put(self, k, v, profile=None, profFinal=True):
+        with timer("t_serialize", profile, final=profFinal):
+            if self.serialize:
+                v = pickle.dumps(v)
+
+        with timer("t_lattice", profile, final=profFinal):
+            val = anna.lattices.LWWPairLattice(self.get_time(), v)
+
+        with timer("t_write", profile, final=profFinal):
+            self.handle.put(k, val)
+
+
+    def get(self, k, profile=None, profFinal=True):
+        with timer("t_read", profile, final=profFinal):
+            raw = self.handle.get(k)[k].reveal()
+
+        if raw is None:
+            raise KVKeyError(k)
+
+        with timer("t_deserialize", profile, final=profFinal):
+            if self.serialize and raw is not None:
+                return pickle.loads(raw)
+            else:
+                return raw
+
+
+    def delete(self, *keys, profile=None, profFinal=True):
+        pass
+
+
+    def destroy(self):
+        pass
 
 class Local(kv):
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is

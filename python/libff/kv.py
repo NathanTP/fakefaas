@@ -121,9 +121,8 @@ class Anna(kv):
         with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
                 v = pickle.dumps(v)
-
-        with timer("t_lattice", profile, final=profFinal):
-            val = anna.lattices.LWWPairLattice(self.get_time(), v)
+            with timer("t_lattice", profile, final=profFinal):
+                val = anna.lattices.LWWPairLattice(self.get_time(), v)
 
         with timer("t_write", profile, final=profFinal):
             self.handle.put(k, val)

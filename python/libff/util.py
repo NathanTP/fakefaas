@@ -174,10 +174,12 @@ def testenv(testName, mode):
     up and running and kills it after the test."""
     if mode == 'process':
         redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
-
+    if mode == 'Anna':
+        annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd='/home/jasonding/anna')
+    
     try:
         # Redis takes a sec to boot up
-        time.sleep(0.1)
+        time.sleep(1)
         yield
     except redis.exceptions.ConnectionError as e:
         redisProc.terminate()
@@ -188,3 +190,8 @@ def testenv(testName, mode):
         redisProc.terminate()
         # It takes a while for redis to release the port after exiting
         time.sleep(0.5)
+    if mode == 'Anna':
+        annaProc.terminate()
+        annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd='/home/jasonding/anna')
+        time.sleep(0.5)
+        #annaTerm.terminate()

@@ -79,6 +79,7 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
                     continue
                 time_list.append(time_slot)
             time_list = np.array(time_list)
+            kv = None
             print("Whole time list is:")
             print(time_list)
             print("Mean is: " + str(np.mean(time_list)))
@@ -109,7 +110,7 @@ def time_putAndget(mode, is_mixed=False, is_manyRW=False, is_cold=True, is_R=Tru
     else:
         test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W)
 
-time_putAndget('process', is_mixed=True, is_cold=False, is_W=False)
+time_putAndget('Anna', is_mixed=False, is_cold=False, is_W=False)
 
 
 # Commands for installing Anna and it to python. Command to launch and stop anna.

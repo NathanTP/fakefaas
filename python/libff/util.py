@@ -179,19 +179,19 @@ def testenv(testName, mode):
     
     try:
         # Redis takes a sec to boot up
-        time.sleep(1)
+        time.sleep(0.5)
         yield
     except redis.exceptions.ConnectionError as e:
         redisProc.terminate()
         serverOut = redisProc.stdout.read()
         raise TestError(testName, str(e) + ": " + serverOut)
-
+    finally:
+        if mode == 'Anna':
+            annaProc.terminate()
+            annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd='/home/jasonding/anna')
+            #annaTerm.wait(timeout=30)
+            time.sleep(0.5)
     if mode == 'process':
         redisProc.terminate()
         # It takes a while for redis to release the port after exiting
         time.sleep(0.5)
-    if mode == 'Anna':
-        annaProc.terminate()
-        annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd='/home/jasonding/anna')
-        time.sleep(0.5)
-        #annaTerm.terminate()

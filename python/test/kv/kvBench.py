@@ -79,7 +79,7 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
                     continue
                 time_list.append(time_slot)
             time_list = np.array(time_list)
-            kv = None
+            del kv
             print("Whole time list is:")
             print(time_list)
             print("Mean is: " + str(np.mean(time_list)))

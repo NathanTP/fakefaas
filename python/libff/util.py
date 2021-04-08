@@ -5,6 +5,7 @@ import jsonpickle as json
 import pathlib
 import subprocess as sp
 import redis
+import os
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisConf = pathlib.Path(__file__).parent / 'redis.conf'
@@ -175,7 +176,8 @@ def testenv(testName, mode):
     if mode == 'process':
         redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
     if mode == 'Anna':
-        annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd='/home/jasonding/anna')
+        cwd = os.environ['Anna']
+        annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd=cwd)
     
     try:
         # Redis takes a sec to boot up
@@ -188,7 +190,7 @@ def testenv(testName, mode):
     finally:
         if mode == 'Anna':
             annaProc.terminate()
-            annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd='/home/jasonding/anna')
+            annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd=cwd)
             #annaTerm.wait(timeout=30)
             time.sleep(0.5)
     if mode == 'process':

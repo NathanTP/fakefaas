@@ -176,7 +176,7 @@ def testenv(testName, mode):
     if mode == 'process':
         redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
     if mode == 'Anna':
-        cwd = os.environ['Anna']
+        cwd = os.environ['ANNA']
         annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd=cwd)
     
     try:

@@ -21,7 +21,7 @@ We also need to install anna (a type of kv database similar to redis), here are 
 3. Then, build anna by running `./scripts/build.sh`.
 4. You can check if anna is successfully installed by running `./scripts/run-tests.sh`.
 5. Then, we need to set up anna client in python. We do this by running `python(3) setup.py install` in the `anna/client/python` directory.
-6. Finally, for testing purposes, we need to set up a environment variable for the absolute path of anna directory. You can do this by `export Anna='{absolute directory of anna}'`. Notice that it is temporary only for your current shell. You can search more about how to add it permanently online.
+6. Finally, for testing purposes, we need to set up a environment variable for the absolute path of anna directory. You can do this by `export ANNA='{absolute directory of anna}'`. Notice that it is temporary only for your current shell. You can search more about how to add it permanently online.
 
 ## GPU Support
 Some of the functionality in this project requires a GPU, but not all. In

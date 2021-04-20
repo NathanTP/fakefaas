@@ -1,11 +1,10 @@
 import sys
 import numpy as np
+import pickle
 
 from tvm import relay
 from tvm.relay import testing
 import tvm
-from tvm import te
-from tvm.contrib import graph_runtime
 
 batch_size = 1
 num_class = 10
@@ -19,9 +18,22 @@ with tvm.transform.PassContext():
 
 lib = graphMod.get_lib()
 cudaLib = lib.imported_modules[0]
-print("Raw source code for generated cuda:")
-print(cudaLib.get_source())
 
 outputName = "mnist"
-print("\n\nSaving CUDA to {}.ptx and {}.tvm_meta.json:".format(outputName,outputName))
+
+print("\n")
+print("Saving execution graph to: " + outputName + "_graph.json")
+with open(outputName + "_graph.json", 'w') as f:
+    f.write(graphMod.get_json())
+
+print("Saving parameters to: " + outputName + "_params.json")
+with open(outputName + "_params.pickle", "wb") as f:
+    # Can't pickle tvm.ndarray, gotta convert to numpy
+    pickle.dump({ k : p.asnumpy() for k,p in params.items() }, f)
+
+print("Saving Raw CUDA Source to: " + outputName + ".cu")
+with open(outputName + ".cu", 'w') as f:
+    f.write(cudaLib.get_source())
+
+print("Saving CUDA to: {}.ptx and {}.tvm_meta.json:".format(outputName,outputName))
 cudaLib.save(outputName + ".ptx")

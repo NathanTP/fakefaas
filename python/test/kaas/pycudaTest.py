@@ -28,6 +28,7 @@ def test(func):
 
 
 def getCubin():
+    """Load kernels into a pycuda module from a cubin file. Returns a pycuda function handle."""
     mod = cuda.module_from_file("kerns/kerns.cubin")
     func = mod.get_function("doublifyKern")
     func.prepare("P")

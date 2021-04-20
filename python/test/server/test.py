@@ -3,13 +3,27 @@ import time
 import sys
 from pprint import pprint
 
-import libff
 from libff import invoke
+import zmq
+import pickle
 
 workerPath = pathlib.Path(__file__).parent.resolve() / "worker.py"
 
+def tmpHello():
+    context = zmq.Context.instance()
+    socket = context.socket(zmq.REQ)
+    socket.identity = (u"testClient").encode('utf-8')
+    socket.connect("ipc://libffserver_req.ipc")
+
+    socket.send_pyobj({"hello" : "world"})
+
+    print("Waiting for response")
+    reply = socket.recv()
+    print(pickle.loads(reply))
+
+    
 def helloWorld(constructor):
-    ctx = libff.invoke.RemoteCtx(None, None)
+    ctx = invoke.RemoteCtx(None, None)
 
     func = constructor(workerPath, "echo", ctx)
 
@@ -253,38 +267,39 @@ def testAsync(constructor):
 
     return True
 
+
 if __name__ == "__main__":
-    funcConstructor = libff.invoke.ProcessRemoteFunc
-    # funcConstructor = libff.invoke.DirectRemoteFunc
-
+    # print("Test:")
+    # tmpHello()
+    # print("DONE")
     print("Basic Hello World Test:")
-    helloWorld(funcConstructor)
+    helloWorld(invoke.GatewayRemoteFunc)
     print("PASS")
-
-    # if invoke.cudaAvailable:
-    #     print("Testing GPU support")
-    #     if not testCuda(funcConstructor):
-    #         sys.exit(1)
-    #     print("PASS")
-    # else:
-    #     print("GPU support unavailable, skipping test")
-    #
-    # print("Testing Stats")
-    # if not stats(funcConstructor):
-    #     sys.exit(1)
-    # print("PASS")
-    #
-    # print("Testing Async")
-    # if not testAsync(funcConstructor):
-    #     sys.exit(1)
-    # print("PASS")
-    #
-    # print("Testing Non-blocking futures")
-    # if not testNonBlock(funcConstructor):
-    #     sys.exit(1)
-    # print("PASS")
-    #
-    # print("Testing Private State")
-    # if not testState(funcConstructor):
-    #     sys.exit(1)
-    # print("PASS")
+#
+#     if invoke.cudaAvailable:
+#         print("Testing GPU support")
+#         if not testCuda(funcConstructor):
+#             sys.exit(1)
+#         print("PASS")
+#     else:
+#         print("GPU support unavailable, skipping test")
+#
+#     print("Testing Stats")
+#     if not stats(funcConstructor):
+#         sys.exit(1)
+#     print("PASS")
+#
+#     print("Testing Async")
+#     if not testAsync(funcConstructor):
+#         sys.exit(1)
+#     print("PASS")
+#
+#     print("Testing Non-blocking futures")
+#     if not testNonBlock(funcConstructor):
+#         sys.exit(1)
+#     print("PASS")
+#
+#     print("Testing Private State")
+#     if not testState(funcConstructor):
+#         sys.exit(1)
+#     print("PASS")

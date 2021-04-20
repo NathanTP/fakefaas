@@ -6,9 +6,12 @@ import abc
 import importlib.util
 import argparse
 import jsonpickle as json
+import pickle
 import traceback
 import time
 import copy
+import zmq
+import logging
 
 from . import array
 from . import kv 
@@ -502,8 +505,158 @@ class ProcessRemoteFunc(RemoteFunc):
         pass
 
 
+_gatewayUrl_client = "ipc://libffGateway_client.ipc"
+class GatewayRemoteFunc(RemoteFunc):
+    """Sends requests to a libff gateway (libff.server) for execution"""
+
+    def __init__(self, packagePath, funcName, context: RemoteCtx, clientID=0, stats=None, enableGpu=False):
+        self.fName = funcName
+        self.enableGpu = enableGpu
+        self.packagePath = str(packagePath)
+
+        # Every function gets it's own socket. This lets zmq handle the async
+        # delivery and all that.
+        self.socket = _zmqCtx.socket(zmq.REQ)
+        self.socket.identity = str(clientID).encode('utf-8')
+
+        self.socket.connect(_gatewayUrl_client)
+
+        # The profs in ctx are used only for passing to the function,
+        # self.stats is for the client-side RemoteFun
+        self.ctx = copy.copy(context)
+        if stats is None:
+            self.stats = util.profCollection()
+        else:
+            self.stats = stats 
+        
+
+    def InvokeAsync(self, arg):
+        # I think I'm just gonna deprecate this, not worth the headaches. At
+        # most I'd want to do an in-order async or something.
+        raise NotImplementedError()
+
+    def Invoke(self, arg):
+        req = { "enableGpu" : self.enableGpu,
+                "fPath" : self.packagePath,
+                "fName" : self.fName,
+                "command" : "invoke",
+                "fArg" : arg,
+                "stats" : util.profCollection() }
+
+        with util.timer('t_invoke', self.stats):
+            self.socket.send_pyobj(req)
+            resp = self.socket.recv_pyobj()
+
+        return resp
+
+
+    def getStats(self):
+        return self.stats
+
+
+    def resetStats(self):
+        self.stats.reset()
+
+
+    def Close(self):
+        self.socket.close()
+
+
 def _remoteServerRespond(msg):
     print(json.dumps(msg), flush=True)
+
+
+def _remoteServerRespondZMQ(stream, msg):
+    stream.send_multipart([client_addr, b'', msg])
+
+
+def getLogger(name):
+    log = logging.getLogger(name)
+    log.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter("%(name)s: %(message)s")
+    fileHandler = logging.FileHandler(name + ".log")
+    fileHandler.setLevel(logging.DEBUG)
+    fileHandler.setFormatter(formatter)
+    log.addHandler(fileHandler)
+
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setLevel(logging.DEBUG)
+    consoleHandler.setFormatter(formatter)
+    log.addHandler(consoleHandler)
+    return log 
+
+
+def zmqRespond(socket, client, msg):
+    socket.send_multipart([client, b'', pickle.dumps(msg)])
+
+def ZmqRemoteProcessServer(funcs, serverArgs):
+    parser = argparse.ArgumentParser(description='libff executor server')
+    parser.add_argument("-u", "--url", help="ZMQ URL")
+    parser.add_argument("-i", "--id", help="Unique identifier for this function executor")
+    parser.add_argument("-g", "--gpu", type=int, help="Specify a GPU to use (otherwise no GPU will be available)")
+    args = parser.parse_args(serverArgs)
+
+    log = getLogger(args.id)
+
+    objStore = kv.Redis(pwd=util.redisPwd, serialize=True)
+    ctx = RemoteCtx(None, objStore)
+
+    # Global stats are maintained to keep stats reporting off the critical path
+    # (serializing profCollection adds non-trivial overheads)
+    # {fName -> libff.profCollection()}
+    stats = {}
+
+    zmqCtx = zmq.Context.instance()
+    socket = zmqCtx.socket(zmq.REQ)
+    if args.id is not None:
+        socket.identity = args.id.encode("utf-8") 
+
+    socket.connect(args.url)
+
+    socket.send_multipart([b'none', b'', b'READY'])
+
+    log.info("Executor entering event loop")
+    while True:
+        clientID, empty, rawReq = socket.recv_multipart()
+
+        start = time.time()
+        req = pickle.loads(rawReq)
+        decodeTime = time.time() - start
+
+        try:
+            if req['command'] == 'invoke':
+                if req['fName'] not in stats:
+                    stats[req['fName']] = util.profCollection()
+                ctx.profs = stats[req['fName']]
+                ctx.cudaDev = args.gpu 
+                ctx.log = logging.getLogger(args.id + "." + req['fName'])
+                if req['fName'] in funcs:
+                    resp = funcs[req['fName']](req['fArg'], ctx)
+                else:
+                    zmqRespond(socket, clientID, {"error" : "Unrecognized function: " + req['fName']})
+
+                ctx.profs['t_requestDecode'].increment(decodeTime*1000)
+                with util.timer('t_responseEncode', ctx.profs):
+                    zmqRespond(socket, clientID, {"error" : None, "resp" : resp})
+
+            elif req['command'] == 'reportStats':
+                if req['fName'] not in stats:
+                    respStats = util.profCollection()
+                else:
+                    respStats = stats[req['fName']]
+                zmqRespond(socket, clientID, {"error" : None, "resp" : respStats})
+                if req['reset']:
+                    stats.pop(req['fName'], None)
+            else:
+                zmqRespond(socket, clientID, {"error" : "Unrecognized command: " + req['command']})
+
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            zmqRespond(socket, clientID, {"error" : "Unhandled internal error: " + repr(e)})
+
+            print("%s: %s\n" % (socket.identity.decode('ascii'),
+                                request.decode('ascii')), end='')
 
 
 def RemoteProcessServer(funcs, serverArgs):
@@ -520,6 +673,10 @@ def RemoteProcessServer(funcs, serverArgs):
     parser.add_argument("-k", "--kv", action="store_true", help="Enable the key-value store")
     parser.add_argument("-g", "--gpu", type=int, help="Specify a GPU to use (otherwise no GPU will be available)")
     args = parser.parse_args(serverArgs)
+
+    #XXX
+    logger = getLogger("test")
+    logger.info(__main__.__file__)
 
     if args.mount is not None:
         arrStore = array.ArrayStore('file', args.mount)
@@ -552,6 +709,7 @@ def RemoteProcessServer(funcs, serverArgs):
                     stats[req['funcID']] = util.profCollection()
                 ctx.profs = stats[req['funcID']]
                 ctx.cudaDev = args.gpu 
+                ctx.log = logging.getLogger("test.worker")
                 if req['fName'] in funcs:
                     resp = funcs[req['fName']](req['fArg'], ctx)
                 else:
@@ -574,7 +732,9 @@ def RemoteProcessServer(funcs, serverArgs):
             traceback.print_exc(file=sys.stderr)
             _remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})
 
+
 # ==============================================================================
 # Global Init
 # ==============================================================================
 _processExecutors = _processPool()
+_zmqCtx = zmq.Context.instance()

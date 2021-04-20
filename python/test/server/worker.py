@@ -7,7 +7,7 @@ import libff
 
 def echo(req, ctx):
     #XXX
-    ctx.log.info("testing from echo")
+    ctx.log.info("Running echo function")
     return req
 
 
@@ -83,4 +83,4 @@ def LibffInvokeRegister():
 
 if __name__ == "__main__":
     import libff.invoke
-    libff.invoke.RemoteProcessServer(funcMap, sys.argv[1:])
+    libff.invoke.ZmqRemoteProcessServer(funcMap, sys.argv[1:])

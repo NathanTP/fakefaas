@@ -3,30 +3,21 @@ import time
 import sys
 from pprint import pprint
 
-from libff import invoke
+import libff
+import libff.invoke
+
 import zmq
 import pickle
 
 workerPath = pathlib.Path(__file__).parent.resolve() / "worker.py"
 
-def tmpHello():
-    context = zmq.Context.instance()
-    socket = context.socket(zmq.REQ)
-    socket.identity = (u"testClient").encode('utf-8')
-    socket.connect("ipc://libffserver_req.ipc")
-
-    socket.send_pyobj({"hello" : "world"})
-
-    print("Waiting for response")
-    reply = socket.recv()
-    print(pickle.loads(reply))
-
-    
 def helloWorld(constructor):
-    ctx = invoke.RemoteCtx(None, None)
+    ctx = libff.invoke.RemoteCtx(None, None)
 
     func = constructor(workerPath, "echo", ctx)
 
+    resp = func.Invoke({"hello" : "world"})
+    print("got it")
     resp = func.Invoke({"hello" : "world"})
     print(resp)
 
@@ -79,7 +70,9 @@ def testCuda(constructor):
 
     # Make sure multiple functions for the same client work
     r0 = f0.Invoke({})
+    print("FIRST ONE: ", r0)
     r1 = f1.Invoke({})
+    print("SECOND ONE: ", r1)
     if r0['deviceID'] != r1['deviceID']:
         print("TEST INVALID: libff gave different devices to two different functions from the same client. While legal, this invalidates the rest of the test, exiting early.")
         print(r0)
@@ -269,21 +262,20 @@ def testAsync(constructor):
 
 
 if __name__ == "__main__":
-    # print("Test:")
-    # tmpHello()
-    # print("DONE")
+    funcConstructor = libff.invoke.GatewayRemoteFunc
+
     print("Basic Hello World Test:")
-    helloWorld(invoke.GatewayRemoteFunc)
+    helloWorld(funcConstructor)
     print("PASS")
-#
-#     if invoke.cudaAvailable:
-#         print("Testing GPU support")
-#         if not testCuda(funcConstructor):
-#             sys.exit(1)
-#         print("PASS")
-#     else:
-#         print("GPU support unavailable, skipping test")
-#
+
+    # if libff.invoke.cudaAvailable:
+    #     print("Testing GPU support")
+    #     if not testCuda(funcConstructor):
+    #         sys.exit(1)
+    #     print("PASS")
+    # else:
+    #     print("GPU support unavailable, skipping test")
+    #
 #     print("Testing Stats")
 #     if not stats(funcConstructor):
 #         sys.exit(1)
@@ -299,7 +291,7 @@ if __name__ == "__main__":
 #         sys.exit(1)
 #     print("PASS")
 #
-#     print("Testing Private State")
-#     if not testState(funcConstructor):
-#         sys.exit(1)
-#     print("PASS")
+    # print("Testing Private State")
+    # if not testState(funcConstructor):
+    #     sys.exit(1)
+    # print("PASS")

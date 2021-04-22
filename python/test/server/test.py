@@ -80,7 +80,7 @@ def testCuda(constructor):
         return True
 
     # Different clients should get different devices
-    f2 = constructor(workerPath, "cuda", ctx, clientID=1, enableGpu=True)
+    f2 = constructor(workerPath, "cuda", ctx, clientId=1, enableGpu=True)
     r2 = f2.Invoke({})
     if r2['deviceID'] == r0['deviceID'] or r2['deviceID'] == r1['deviceID']:
         # In theory this isn't completely valid, it's possible that libff
@@ -95,7 +95,7 @@ def testCuda(constructor):
 
     # The test system only has 2 GPUs, libff is gonna have to kill an executor
     # for this to work.
-    f3 = constructor(workerPath, "cuda", ctx, clientID=2, enableGpu=True)
+    f3 = constructor(workerPath, "cuda", ctx, clientId=2, enableGpu=True)
     r3 = f3.Invoke({})
 
     return True
@@ -130,7 +130,7 @@ def testState(constructor):
         return False
 
     # New clients need to get new executors
-    f1 = constructor(workerPath, "state", ctx, clientID=1)
+    f1 = constructor(workerPath, "state", ctx, clientId=1)
     resp = f1.Invoke({})
     if resp['cachedData'] is not None:
         print("FAIL: new client ID got old client's cached data")
@@ -264,33 +264,33 @@ def testAsync(constructor):
 if __name__ == "__main__":
     funcConstructor = libff.invoke.GatewayRemoteFunc
 
-    print("Basic Hello World Test:")
-    helloWorld(funcConstructor)
-    print("PASS")
+    # print("Basic Hello World Test:")
+    # helloWorld(funcConstructor)
+    # print("PASS")
 
-    # if libff.invoke.cudaAvailable:
-    #     print("Testing GPU support")
-    #     if not testCuda(funcConstructor):
-    #         sys.exit(1)
-    #     print("PASS")
-    # else:
-    #     print("GPU support unavailable, skipping test")
-    #
+    if libff.invoke.cudaAvailable:
+        print("Testing GPU support")
+        if not testCuda(funcConstructor):
+            sys.exit(1)
+        print("PASS")
+    else:
+        print("GPU support unavailable, skipping test")
+
 #     print("Testing Stats")
 #     if not stats(funcConstructor):
 #         sys.exit(1)
 #     print("PASS")
-#
+
 #     print("Testing Async")
 #     if not testAsync(funcConstructor):
 #         sys.exit(1)
 #     print("PASS")
-#
+
 #     print("Testing Non-blocking futures")
 #     if not testNonBlock(funcConstructor):
 #         sys.exit(1)
 #     print("PASS")
-#
+
     # print("Testing Private State")
     # if not testState(funcConstructor):
     #     sys.exit(1)

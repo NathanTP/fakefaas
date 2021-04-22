@@ -10,6 +10,7 @@ import sys
 import subprocess as sp
 import collections
 import signal
+import enum
 
 from tornado.ioloop import IOLoop
 from zmq.eventloop.zmqstream import ZMQStream
@@ -73,9 +74,18 @@ class executorConfig():
         return self.eId.decode('utf-8')
 
 
+class eState(enum.Enum):
+    INIT    = enum.auto() # Launched but not yet ready
+    READY   = enum.auto() # Accepting requests
+    DYING   = enum.auto() # No longer accepting requests but still processing any backlog 
+    DEAD    = enum.auto() # Death acknowledged, all resources freed
+
+
 class localExecutor():
-    def __init__(self, eCfg):
+    def __init__(self, eCfg, socket):
         self.cfg = eCfg
+        self.socket = socket
+        self.state = eState.INIT
 
         if cudaAvailable and self.cfg.gpu:
             if len(cudaFreeDevs) == 0:
@@ -103,7 +113,6 @@ class localExecutor():
 
         logging.info("Launching executor: " + " ".join(cmd))
         self.proc = sp.Popen(cmd, cwd=self.packagePath.parent)
-        self.ready = False
 
         # Messages waiting for the executor to be ready
         self.pending = []
@@ -111,35 +120,90 @@ class localExecutor():
     def __str__(self):
         return self.cfg.eId.decode('utf-8')
 
-# class execPool():
-#     def __init__(self):
-#         # Authoritative map of all exectors, for now we only support one
-#         # executor per config.
-#         # { executorConfig -> localExecutor }
-#         funcs = {}
-#
-#         # LRU for GPU-enabled executors, we allow infinite non-GPU executors
-#         # for now
-#         gpuLRU = collections.deque() 
-#
-#     
-#     def getExecutor(self, eCfg):
-#         toKill = None
-#         if eCfg in funcs:
-#             f = funcs[eCfg]
-#         else:
-#             if eCfg.gpu && len(cudaFreeDevs) == 0:
-#                 toKill = gpuLRU.pop()
-#                 toKill.kill()
-#
-#             f = localExecutor(eCfg)
-#             funcs[eCfg] = f
-#
-#         if eCfg.gpu:
-#             gpuLRU.remove(f)
-#             gpuLRU.push(f)
-#
-#         return (f, toKill)
+    def shutdown(self):
+        """Politely shutdown the executor. It will handle any work already sent
+        to it and then terminate. To impolitely kill, access self.proc directly."""
+        self.state = eState.DYING
+        self.socket.send_multipart([self.cfg.eId, b'', b'none', b'', b'SHUTDOWN'])
+
+
+class execPool():
+    def __init__(self):
+        # Authoritative map of all exectors, for now we only support one
+        # executor per config.
+        # { executorConfig.eId -> localExecutor }
+        self.funcs = {}
+
+        # LRU for GPU-enabled executors, we allow infinite non-GPU executors
+        # for now
+        self.gpuLRU = collections.deque() 
+
+
+    def killAll(self):
+        """Shutdown all executors, ignoring any pending work."""
+        for f in self.funcs.values():
+            f.proc.send_signal(signal.SIGINT)
+
+        for func in self.funcs.values():
+            try:
+                func.proc.wait(timeout=0.5)
+            except sp.TimeoutExpired:
+                logging.warning("Executor took too long to terminate, killing")
+                func.proc.kill()
+
+
+    def getById(self, eId):
+        """Get an existing executor by id"""
+        if eId in self.funcs:
+            return self.funcs[eId]
+        else:
+            raise RuntimeError("Requested non-existent function: ", eId.decode("utf-8"))
+
+
+    def getOrCreate(self, eCfg, socket):
+        """Get a new or re-used executor."""
+        global cudaFreeDevs
+
+        if eCfg.eId in self.funcs:
+            f = self.funcs[eCfg.eId]
+            # Reset GPU LRU
+            if eCfg.gpu:
+                self.gpuLRU.remove(f)
+                self.gpuLRU.appendleft(f)
+
+        elif eCfg.gpu and len(cudaFreeDevs) == 0:
+            # We don't have an executor for eCfg but we're out of GPUs to
+            # create a new one. Kill something to make room.
+            f = self.gpuLRU[-1]
+            if f.state == eState.DEAD:
+                self.gpuLRU.pop()
+                del self.funcs[f.cfg.eId]
+                cudaFreeDevs.append(f.cudaDev)
+
+                # We are guaranteed to have a free GPU now
+                if len(self.gpuLRU) == 0:
+                    f = localExecutor(eCfg, socket)
+                    self.funcs[eCfg.eId] = f
+                    self.gpuLRU.appendleft(f)
+                else:
+                    f = self.gpuLRU.pop()
+                    self.gpuLRU.appendleft(f)
+
+            elif f.state != eState.DYING:
+                # We don't have enough resources to create a new GPU executor
+                # yet, return a dying executor. The caller cannot give new work
+                # to the executor and must wait until it dies before replaying
+                # any messages. 
+                f.shutdown()
+
+        else:
+            f = localExecutor(eCfg, socket)
+            self.funcs[eCfg.eId] = f
+
+            if eCfg.gpu:
+                self.gpuLRU.appendleft(f)
+
+        return f
 
 
 # This is based on git@github.com:booksbyus/zguide.git examples/Python/lbbroker3.py
@@ -150,7 +214,7 @@ class gatewayLoop(object):
     for different functions."""
 
     def __init__(self, clientSock, executorSock):
-        self.funcs = {}
+        self.pool = execPool()
 
         self.loop = IOLoop.instance()
 
@@ -168,21 +232,45 @@ class gatewayLoop(object):
         clientAddr = msg[2]
         rawResp = msg[4]
 
-        func = self.funcs[funcId]
+        func = self.pool.getById(funcId)
         
         if rawResp == b'READY':
+            assert func.state == eState.INIT
+
             logging.info("Executor {} ready".format(str(func.cfg)))
-            func.ready = True
-            if len(func.pending) != 0:
-                # Some requests might have arrived before the executor was
-                # ready, we can send them now
-                for req in func.pending:
-                    self.executorStream.send_multipart([func.cfg.eId, b'', req['clientAddr'], b'', pickle.dumps(req)])
+            func.state = eState.READY
+
+            # Replay any messages intended for this executor that were waiting
+            # for it to be ready
+            for msg in func.pending:
+                logging.info("Replaying pending message (executor ready)")
+                self.handleClients(msg)
+            func.pending = []
+
+        elif rawResp == b'DEAD':
+            assert func.state == eState.DYING
+            try:
+                func.proc.wait(timeout=0.5)
+            except sp.TimeoutExpired:
+                logging.warning("Executor {} failed to shutdown cleanly, killing".format(str(func.cfg)))
+                func.proc.kill()
+            func.state = eState.DEAD
+
+            # Replay any pending messages now that we have enough resources to
+            # start a new executor. At least the first pending message is
+            # guaranteed to get an executor (avoids starvation)
+            for msg in func.pending:
+                logging.info("Replaying pending message (executor died)")
+                time.sleep(0.5)
+                self.handleClients(msg)
+            func.pending = []
+
         else:
             logging.info("Got response from executor {} for client 0x{}".format(str(func.cfg), clientAddr.hex()))
             # Work done, send back to client
             empty, reply = msg[3:]
             self.clientStream.send_multipart([clientAddr, b'', rawResp])
+
 
 
     def handleClients(self, msg):
@@ -208,15 +296,18 @@ class gatewayLoop(object):
 
         logging.info("Received request from 0x{} for {}:{}".format(req['clientAddr'].hex(), req['fPath'], req['fName']))
 
-        if eCfg.eId not in self.funcs:
-            self.funcs[eCfg.eId] = localExecutor(eCfg)
-        func = self.funcs[eCfg.eId]
+        func = self.pool.getOrCreate(eCfg, self.executorStream)
 
-        if not func.ready:
+        if func.state == eState.INIT:
             logging.debug("Executor {} not ready, pushing request to pending queue".format(str(func)))
-            func.pending.append(req)
-        else:
+            func.pending.append(msg)
+        elif func.state == eState.DYING:
+            logging.debug("Executor {} dying, postponing request until a new executor is available".format(str(func)))
+            func.pending.append(msg)
+        elif func.state == eState.READY:
             self.executorStream.send_multipart([func.cfg.eId, b'', req['clientAddr'], b'', pickle.dumps(req)])
+        else:
+            raise RuntimeError("Unexpected function state: " + str(func.state))
 
 
     def shutdown(self):
@@ -224,11 +315,7 @@ class gatewayLoop(object):
         self.executorStream.stop_on_recv()
         self.clientStream.stop_on_recv()
 
-        # Keyboard interrupts get propagated to children so local workers will
-        # shutdown via the signal, but sending sigint explicitly or remote
-        # workers will shutdown via this message.
-        for func in self.funcs.values():
-            self.executorStream.send_multipart([func.cfg.eId, b'', b'none', b'', b'SHUTDOWN'])
+        self.pool.killAll()
 
         self.executorStream.close()
         self.clientStream.close()

@@ -621,19 +621,25 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
 
     socket.send_multipart([b'none', b'', b'READY'])
 
-    def shutdown():
-        log.info("shutting down")
+    def shutdown(polite=False):
+        log.info("Shutting down")
+
+        if polite:
+            # hard shutdowns (e.g. from sigint) can't send a DEAD signal, they
+            # just die
+            socket.send_multipart([b'none', b'', b'DEAD'])
+
         socket.close()
         sys.exit()
 
-    signal.signal(signal.SIGINT, lambda s,f: shutdown())
+    signal.signal(signal.SIGINT, lambda s,f: shutdown(polite=False))
 
     log.info("Executor entering event loop")
     while True:
         clientId, empty, rawReq = socket.recv_multipart()
 
         if rawReq == b'SHUTDOWN':
-            shutdown()
+            shutdown(polite=True)
             break
 
         start = time.time()

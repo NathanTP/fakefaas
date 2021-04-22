@@ -1,11 +1,16 @@
 import redis
-import anna.client
-import anna.lattices
 import time
 import pickle
 import abc
 import copy
 from .util import *
+
+try:
+    import anna.client
+    import anna.lattices
+    annaAvailable = True
+except ImportError:
+    annaAvailable = False
 
 class KVKeyError(Exception):
     def __init__(self, key):

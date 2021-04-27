@@ -2,6 +2,7 @@ import libff as ff
 import libff.kv
 import numpy as np
 import time
+#import matplotlib.pyplot as plt
 
 # Test kv.put and kv.get
 def test_putAndget(kv, k, v, is_R, is_W):
@@ -54,9 +55,11 @@ def test_mixed(mode, klst, vlst, is_cold, is_R, is_W):
         print("Mean is: " + str(np.mean(time_list)))
         print("Variance is: " + str(np.var(time_list)))
         print("-"*30)
+    return time_list
 
 # Helper function for testing one size of matrices
 def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
+    all_time_list = []
     if is_manyRW:
             print("Test with mutiple reads and writes")
     for k, v in zip(klst, vlst):
@@ -79,12 +82,14 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
                     continue
                 time_list.append(time_slot)
             time_list = np.array(time_list)
+            all_time_list.append(time_list)
             del kv
             print("Whole time list is:")
             print(time_list)
             print("Mean is: " + str(np.mean(time_list)))
             print("Variance is: " + str(np.var(time_list)))
             print("-"*30)
+    return all_time_list
 
 ''' 
 @para: 
@@ -106,14 +111,27 @@ def time_putAndget(mode, is_mixed=False, is_manyRW=False, is_cold=True, is_R=Tru
         print("Test only for writes")
     if is_mixed:
         print("Test with mixed sizes of matrices")
-        test_mixed(mode, klst, vlst, is_cold, is_R, is_W)
+        return test_mixed(mode, klst, vlst, is_cold, is_R, is_W)
     else:
-        test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W)
+        return test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W)
 
-time_putAndget('Anna', is_mixed=False, is_cold=False, is_W=False)
+time_putAndget('Anna', is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True)
 
+def plot_time_list(is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True):
+    direct = time_putAndget('direct', is_mixed, is_manyRW, is_cold, is_R, is_W)
+    redis = time_putAndget('process', is_mixed, is_manyRW, is_cold, is_R, is_W)
+    anna = time_putAndget('Anna', is_mixed, is_manyRW, is_cold, is_R, is_W)
+    if is_mixed:
+        x = np.ones(10)
+        plt.scatter(x, direct, label='direct')
+        plt.scatter(x+1, redis, label='redis')
+        plt.scatter(x+2, anna, label='anna')
+        plt.show()
+    else:
+        return
 
-# Commands for installing Anna and it to python. Command to launch and stop anna.
+#plot_time_list(is_mixed=True)
+
 # warm up first without timing compared with cold cache
 # try to first complete all kvlst for one kv.
 # all the times (whole list, mean, std)

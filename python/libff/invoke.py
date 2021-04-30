@@ -508,13 +508,17 @@ class ProcessRemoteFunc(RemoteFunc):
 
 _gatewayUrl_client = "ipc://libffGateway_client.ipc"
 class GatewayRemoteFunc(RemoteFunc):
-    """Sends requests to a libff gateway (libff.server) for execution"""
+    """Sends requests to a libff gateway (libff.server) for execution.
+    Note: all-caps ClientIDs are reserved"""
 
-    def __init__(self, packagePath, funcName, context: RemoteCtx, clientId=0, stats=None, enableGpu=False):
+    def __init__(self, packagePath, funcName, context: RemoteCtx, clientId="default", stats=None, enableGpu=False):
         self.fName = funcName
         self.enableGpu = enableGpu
         self.packagePath = str(packagePath)
-        self.clientId = clientId
+        self.clientId = str(clientId)
+
+        if self.clientId.isupper():
+            raise ValueError("All upper-case Client IDs are reserved")
 
         # Every function gets it's own socket. This lets zmq handle the async
         # delivery and all that.
@@ -537,13 +541,12 @@ class GatewayRemoteFunc(RemoteFunc):
         raise NotImplementedError()
 
     def Invoke(self, arg):
-        req = { "tenantId" : str(self.clientId),
+        req = { "tenantId" : self.clientId,
                 "enableGpu" : self.enableGpu,
                 "fPath" : self.packagePath,
                 "fName" : self.fName,
                 "command" : "invoke",
-                "fArg" : arg,
-                "stats" : util.profCollection() }
+                "fArg" : arg }
 
         with util.timer('t_invoke', self.stats):
             self.socket.send_pyobj(req)
@@ -556,6 +559,16 @@ class GatewayRemoteFunc(RemoteFunc):
 
 
     def getStats(self):
+        req = { "tenantId" : str(self.clientId),
+                "enableGpu" : self.enableGpu,
+                "fPath" : self.packagePath,
+                "fName" : self.fName,
+                "command" : "reportStats" }
+
+        self.socket.send_pyobj(req)
+        resp = self.socket.recv_pyobj()
+        self.stats.merge(resp)
+
         return self.stats
 
 
@@ -610,7 +623,8 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
     # Global stats are maintained to keep stats reporting off the critical path
     # (serializing profCollection adds non-trivial overheads)
     # {fName -> libff.profCollection()}
-    stats = {}
+    # stats = {}
+    stats = util.profCollection()
 
     zmqCtx = zmq.Context.instance()
     socket = zmqCtx.socket(zmq.REQ)
@@ -619,7 +633,7 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
 
     socket.connect(args.url)
 
-    socket.send_multipart([b'none', b'', b'READY'])
+    socket.send_multipart([b'READY', b'', b''])
 
     def shutdown(polite=False):
         log.info("Shutting down")
@@ -627,7 +641,7 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
         if polite:
             # hard shutdowns (e.g. from sigint) can't send a DEAD signal, they
             # just die
-            socket.send_multipart([b'none', b'', b'DEAD'])
+            zmqRespond(socket, b'DEAD', stats)
 
         socket.close()
         sys.exit()
@@ -638,19 +652,13 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
     while True:
         clientId, empty, rawReq = socket.recv_multipart()
 
-        if rawReq == b'SHUTDOWN':
-            shutdown(polite=True)
-            break
-
         start = time.time()
         req = pickle.loads(rawReq)
         decodeTime = time.time() - start
 
         try:
             if req['command'] == 'invoke':
-                if req['fName'] not in stats:
-                    stats[req['fName']] = util.profCollection()
-                ctx.profs = stats[req['fName']]
+                ctx.profs = stats.mod(pathlib.Path(req['fPath']).stem + ":" + req['fName'])
                 ctx.cudaDev = args.gpu 
                 ctx.log = logging.getLogger(args.id + "." + req['fName'])
                 if req['fName'] in funcs:
@@ -663,13 +671,12 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
                     zmqRespond(socket, clientId, {"error" : None, "resp" : resp})
 
             elif req['command'] == 'reportStats':
-                if req['fName'] not in stats:
-                    respStats = util.profCollection()
-                else:
-                    respStats = stats[req['fName']]
-                zmqRespond(socket, clientId, {"error" : None, "resp" : respStats})
-                if req['reset']:
-                    stats.pop(req['fName'], None)
+                zmqRespond(socket, b'STATS', stats)
+                stats = util.profCollection()
+
+            elif req['command'] == 'shutdown':
+                shutdown(polite=True)
+                break
 
             else:
                 zmqRespond(socket, clientId, {"error" : "Unrecognized command: " + req['command']})
@@ -677,9 +684,6 @@ def ZmqRemoteProcessServer(funcs, serverArgs):
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             zmqRespond(socket, clientId, {"error" : "Unhandled internal error: " + repr(e)})
-
-            print("%s: %s\n" % (socket.identity.decode('ascii'),
-                                request.decode('ascii')), end='')
 
 
 def RemoteProcessServer(funcs, serverArgs):
@@ -696,10 +700,6 @@ def RemoteProcessServer(funcs, serverArgs):
     parser.add_argument("-k", "--kv", action="store_true", help="Enable the key-value store")
     parser.add_argument("-g", "--gpu", type=int, help="Specify a GPU to use (otherwise no GPU will be available)")
     args = parser.parse_args(serverArgs)
-
-    #XXX
-    logger = getLogger("test")
-    logger.info(__main__.__file__)
 
     if args.mount is not None:
         arrStore = array.ArrayStore('file', args.mount)

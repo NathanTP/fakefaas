@@ -158,6 +158,24 @@ def _runStatsFunc(func, runTime):
 
     return (stats, measured)
 
+
+def statsSimple(constructor):
+    ctx = libff.invoke.RemoteCtx(None, None)
+    
+    stats = libff.profCollection()
+    func = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f'))
+    resp = func.Invoke({"runtime" : 1000})
+    print("Response:")
+    print(resp)
+
+    fStats = func.getStats()
+    print("Reported Stats:")
+    print(fStats)
+
+    print("Original Stats:")
+    print(stats)
+
+
 def stats(constructor):
     sleepTime = 1000
     repeat = 2
@@ -268,19 +286,24 @@ if __name__ == "__main__":
     # helloWorld(funcConstructor)
     # print("PASS")
 
-    if libff.invoke.cudaAvailable:
-        print("Testing GPU support")
-        if not testCuda(funcConstructor):
-            sys.exit(1)
-        print("PASS")
-    else:
-        print("GPU support unavailable, skipping test")
+    # print("Running basic stats:")
+    # statsSimple(funcConstructor)
+    # print("PASS")
 
-#     print("Testing Stats")
-#     if not stats(funcConstructor):
-#         sys.exit(1)
-#     print("PASS")
+    # if libff.invoke.cudaAvailable:
+    #     print("Testing GPU support")
+    #     if not testCuda(funcConstructor):
+    #         sys.exit(1)
+    #     print("PASS")
+    # else:
+    #     print("GPU support unavailable, skipping test")
 
+    print("Testing Stats")
+    if not stats(funcConstructor):
+        sys.exit(1)
+    print("PASS")
+
+# XXX not gonna support these features for now
 #     print("Testing Async")
 #     if not testAsync(funcConstructor):
 #         sys.exit(1)

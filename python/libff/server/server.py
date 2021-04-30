@@ -56,7 +56,7 @@ class executorConfig():
         self.tId = req['tenantId']
         self.gpu = req['enableGpu']
 
-        # Unique short name for this function, used to idenify zmq messages
+        # Unique short name for this executor, used to idenify zmq messages
         self.eId = (str(self.path.stem) + "_" + str(self.tId)).encode('utf-8')
 
     def __eq__(self, other):
@@ -86,6 +86,9 @@ class localExecutor():
         self.cfg = eCfg
         self.socket = socket
         self.state = eState.INIT
+        
+        # If set to non-None, then a client is waiting for a stats response
+        self.statReq = None
 
         if cudaAvailable and self.cfg.gpu:
             if len(cudaFreeDevs) == 0:
@@ -124,7 +127,8 @@ class localExecutor():
         """Politely shutdown the executor. It will handle any work already sent
         to it and then terminate. To impolitely kill, access self.proc directly."""
         self.state = eState.DYING
-        self.socket.send_multipart([self.cfg.eId, b'', b'none', b'', b'SHUTDOWN'])
+        req = {"command" : "shutdown"}
+        self.socket.send_multipart([self.cfg.eId, b'', b'none', b'', pickle.dumps(req)])
 
 
 class execPool():
@@ -214,6 +218,10 @@ class gatewayLoop(object):
     for different functions."""
 
     def __init__(self, clientSock, executorSock):
+        # Schema: [tenant][fPath.stem_fName]
+        # Executor sets [fPath.stem_fName] and below, server responsible for [tenant] 
+        self.stats = libff.profCollection()
+
         self.pool = execPool()
 
         self.loop = IOLoop.instance()
@@ -234,7 +242,7 @@ class gatewayLoop(object):
 
         func = self.pool.getById(funcId)
         
-        if rawResp == b'READY':
+        if clientAddr == b'READY':
             assert func.state == eState.INIT
 
             logging.info("Executor {} ready".format(str(func.cfg)))
@@ -247,8 +255,12 @@ class gatewayLoop(object):
                 self.handleClients(msg)
             func.pending = []
 
-        elif rawResp == b'DEAD':
+        elif clientAddr == b'DEAD':
             assert func.state == eState.DYING
+
+            newStats = pickle.loads(rawResp)
+            self.stats.mod(func.cfg.tId).merge(newStats)
+
             try:
                 func.proc.wait(timeout=0.5)
             except sp.TimeoutExpired:
@@ -261,9 +273,20 @@ class gatewayLoop(object):
             # guaranteed to get an executor (avoids starvation)
             for msg in func.pending:
                 logging.info("Replaying pending message (executor died)")
-                time.sleep(0.5)
                 self.handleClients(msg)
             func.pending = []
+
+        elif clientAddr == b'STATS':
+            newStats = pickle.loads(rawResp)
+            self.stats.mod(func.cfg.tId).merge(newStats)
+
+            # For now, there is only ever one executor per function so we can
+            # respond to the client as soon as we get any stats response.
+            # Eventually we'll have to have a counter or something.
+            if func.statReq is not None:
+                reportStats = self.stats.mod(func.statReq['tenantId']).mod(func.statReq['fId'])
+                self.clientStream.send_multipart([func.statReq['clientAddr'], b'', pickle.dumps(reportStats)])
+
 
         else:
             logging.info("Got response from executor {} for client 0x{}".format(str(func.cfg), clientAddr.hex()))
@@ -272,16 +295,15 @@ class gatewayLoop(object):
             self.clientStream.send_multipart([clientAddr, b'', rawResp])
 
 
-
     def handleClients(self, msg):
         """Handle requests from clients. Requests look like:
             {
+                'command'   : What operation to perform on the executor
                 'tenantId'  : ID of a protection domain (tenants are mutually untrusting)
                 'enableGpu' : whether or not this func needs a gpu
                 'fPath'     : Path to the function package
                 'fName'     : Name of the function in the package
                 'fArg'      : Argument to the function
-                'stats'     : XXX Haven't worked out yet
             }
         """
         clientAddr, empty, rawReq = msg
@@ -290,11 +312,13 @@ class gatewayLoop(object):
         req = pickle.loads(rawReq)
         req['clientAddr'] = clientAddr
         req['fPath'] = pathlib.Path(req['fPath'])
+        req['fId'] = req['fPath'].stem + ":" + req['fName'] 
         eCfg = executorConfig(req)
 
-        # eId = req['tenantId'] + "_" + req['fPath'].stem
-
         logging.info("Received request from 0x{} for {}:{}".format(req['clientAddr'].hex(), req['fPath'], req['fName']))
+
+        #XXX Need special handling for stats to deal with when all executors
+        #XXX are dead or multiple executors for the same func
 
         func = self.pool.getOrCreate(eCfg, self.executorStream)
 
@@ -305,7 +329,10 @@ class gatewayLoop(object):
             logging.debug("Executor {} dying, postponing request until a new executor is available".format(str(func)))
             func.pending.append(msg)
         elif func.state == eState.READY:
-            self.executorStream.send_multipart([func.cfg.eId, b'', req['clientAddr'], b'', pickle.dumps(req)])
+            if req['command'] == "reportStats":
+                func.statReq = req
+
+            self.executorStream.send_multipart([func.cfg.eId, b'', req['clientAddr'], b'', rawReq])
         else:
             raise RuntimeError("Unexpected function state: " + str(func.state))
 

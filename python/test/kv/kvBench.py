@@ -50,11 +50,11 @@ def test_mixed(mode, klst, vlst, is_cold, is_R, is_W):
                 continue
             time_list.append(time_once)
         time_list = np.array(time_list)
-        print("Whole time list is:")
-        print(time_list)
-        print("Mean is: " + str(np.mean(time_list)))
-        print("Variance is: " + str(np.var(time_list)))
-        print("-"*30)
+        #print("Whole time list is:")
+        #print(time_list)
+        #print("Mean is: " + str(np.mean(time_list)))
+        #print("Variance is: " + str(np.var(time_list)))
+        #print("-"*30)
     return time_list
 
 # Helper function for testing one size of matrices
@@ -73,8 +73,9 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
                 time.sleep(0.5)
                 if is_manyRW:
                     time_slot = 0
-                    for _ in range(5):
+                    for _ in range(10):
                         time_slot += test_putAndget(kv, k, v, is_R, is_W)
+                    time_slot /= 10
                 else:
                     time_slot = test_putAndget(kv, k, v, is_R, is_W)
                 if j == 0:  # warm cache up by not timing the first storing of data.
@@ -84,11 +85,11 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
             time_list = np.array(time_list)
             all_time_list.append(time_list)
             del kv
-            print("Whole time list is:")
-            print(time_list)
-            print("Mean is: " + str(np.mean(time_list)))
-            print("Variance is: " + str(np.var(time_list)))
-            print("-"*30)
+            #print("Whole time list is:")
+            #print(time_list)
+            #print("Mean is: " + str(np.mean(time_list)))
+            #print("Variance is: " + str(np.var(time_list)))
+            #print("-"*30)
     return all_time_list
 
 ''' 
@@ -115,7 +116,7 @@ def time_putAndget(mode, is_mixed=False, is_manyRW=False, is_cold=True, is_R=Tru
     else:
         return test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W)
 
-time_putAndget('Anna', is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True)
+#time_putAndget('process', is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True)
 
 def plot_time_list(is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True):
     direct = time_putAndget('direct', is_mixed, is_manyRW, is_cold, is_R, is_W)

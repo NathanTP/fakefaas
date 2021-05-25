@@ -8,6 +8,8 @@ import sys
 def testSimple(mode):
     if mode == 'direct':
         kv = ff.kv.Local()
+    elif mode == 'Anna':
+        kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -21,6 +23,9 @@ def testSimple(mode):
         print("Expected: ", a)
         print("Got: ", aFetched)
         return False
+
+    if mode == 'Anna':
+        return True
 
     kv.delete('testSimpleA')
 
@@ -46,6 +51,8 @@ def testSimple(mode):
 def testCopy(mode):
     if mode == 'direct':
         kv = ff.kv.Local(copyObjs=True)
+    elif mode == 'Anna':
+        kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -67,7 +74,7 @@ def testCopy(mode):
     return True
 
 def main():
-    for mode in ['direct', 'process']:
+    for mode in ['direct', 'process', 'Anna']:
         print("Running simple test (" + mode + "):")
         with ff.testenv('simple', mode):
             success = testSimple(mode)

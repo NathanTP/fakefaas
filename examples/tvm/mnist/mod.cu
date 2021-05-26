@@ -24,11 +24,11 @@
   #define int64_t long long
   #define uint64_t unsigned long long
 #endif
-extern "C" __global__ void fused_nn_batch_flatten_kernel0(float* __restrict__ tensor, float* __restrict__ placeholder) {
+extern "C" __global__ void fused_nn_batch_flatten_kernel0(float* __restrict__ placeholder, float* __restrict__ tensor) {
   tensor[(((int)threadIdx.x))] = placeholder[(((int)threadIdx.x))];
 }
 
-extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
+extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ placeholder2, float* __restrict__ T_relu) {
   float T_dense_rf[1];
   __shared__ float red_buf0[64];
   __shared__ float T_dense[1];
@@ -111,7 +111,7 @@ extern "C" __global__ void fused_nn_softmax_kernel0(float* __restrict__ placehol
   }
 }
 
-extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_1_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
+extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_1_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ placeholder2, float* __restrict__ T_relu) {
   float T_dense_rf[1];
   __shared__ float red_buf0[64];
   __shared__ float T_dense[1];
@@ -144,7 +144,7 @@ extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_1_kernel0(float* _
   }
 }
 
-extern "C" __global__ void fused_nn_dense_nn_bias_add_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_add, float* __restrict__ placeholder2) {
+extern "C" __global__ void fused_nn_dense_nn_bias_add_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ placeholder2, float* __restrict__ T_add) {
   float T_dense_rf[1];
   __shared__ float red_buf0[64];
   __shared__ float T_dense[1];

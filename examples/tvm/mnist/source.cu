@@ -24,6 +24,41 @@
   #define int64_t long long
   #define uint64_t unsigned long long
 #endif
+extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
+  float T_dense_rf[1];
+  __shared__ float red_buf0[64];
+  __shared__ float T_dense[1];
+  T_dense_rf[(0)] = 0.000000e+00f;
+  for (int k_outer = 0; k_outer < 2; ++k_outer) {
+    T_dense_rf[(0)] = (T_dense_rf[(0)] + (placeholder[(((k_outer * 64) + ((int)threadIdx.x)))] * placeholder1[((((((int)blockIdx.x) * 128) + (k_outer * 64)) + ((int)threadIdx.x)))]));
+  }
+  __syncthreads();
+  ((volatile float*)red_buf0)[(((int)threadIdx.x))] = T_dense_rf[(0)];
+  __syncthreads();
+  if (((int)threadIdx.x) < 32) {
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 32))]);
+  }
+  __syncthreads();
+  if (((int)threadIdx.x) < 16) {
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 16))]);
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 8))]);
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 4))]);
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 2))]);
+    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 1))]);
+  }
+  __syncthreads();
+  if (((int)threadIdx.x) == 0) {
+    T_dense[(0)] = ((volatile float*)red_buf0)[(0)];
+  }
+  if (((int)threadIdx.x) == 0) {
+    T_relu[(((int)blockIdx.x))] = max((T_dense[(0)] + placeholder2[(((int)blockIdx.x))]), 0.000000e+00f);
+  }
+}
+
+extern "C" __global__ void fused_nn_batch_flatten_kernel0(float* __restrict__ tensor, float* __restrict__ placeholder) {
+  tensor[(((int)threadIdx.x))] = placeholder[(((int)threadIdx.x))];
+}
+
 extern "C" __global__ void fused_nn_dense_nn_bias_add_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_add, float* __restrict__ placeholder2) {
   float T_dense_rf[1];
   __shared__ float red_buf0[64];
@@ -53,17 +88,15 @@ extern "C" __global__ void fused_nn_dense_nn_bias_add_kernel0(float* __restrict_
   }
 }
 
-extern "C" __global__ void fused_nn_batch_flatten_kernel0(float* __restrict__ tensor, float* __restrict__ placeholder) {
-  tensor[(((int)threadIdx.x))] = placeholder[(((int)threadIdx.x))];
-}
-
-extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
+extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_1_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
   float T_dense_rf[1];
   __shared__ float red_buf0[64];
   __shared__ float T_dense[1];
   T_dense_rf[(0)] = 0.000000e+00f;
-  for (int k_outer = 0; k_outer < 2; ++k_outer) {
-    T_dense_rf[(0)] = (T_dense_rf[(0)] + (placeholder[(((k_outer * 64) + ((int)threadIdx.x)))] * placeholder1[((((((int)blockIdx.x) * 128) + (k_outer * 64)) + ((int)threadIdx.x)))]));
+  for (int k_outer = 0; k_outer < 13; ++k_outer) {
+    if (((k_outer * 64) + ((int)threadIdx.x)) < 784) {
+      T_dense_rf[(0)] = (T_dense_rf[(0)] + (placeholder[(((k_outer * 64) + ((int)threadIdx.x)))] * placeholder1[((((((int)blockIdx.x) * 784) + (k_outer * 64)) + ((int)threadIdx.x)))]));
+    }
   }
   __syncthreads();
   ((volatile float*)red_buf0)[(((int)threadIdx.x))] = T_dense_rf[(0)];
@@ -137,39 +170,6 @@ extern "C" __global__ void fused_nn_softmax_kernel0(float* __restrict__ placehol
   red_buf01[(0)] = __shfl_sync(mask1[(0)], red_buf01[(0)], 0, 32);
   if (((int)threadIdx.x) < 10) {
     T_softmax_norm[(((int)threadIdx.x))] = (__shfl_sync(__activemask(), T_softmax_exp[(0)], ((int)threadIdx.x), 32) / red_buf01[(0)]);
-  }
-}
-
-extern "C" __global__ void fused_nn_dense_nn_bias_add_nn_relu_1_kernel0(float* __restrict__ placeholder, float* __restrict__ placeholder1, float* __restrict__ T_relu, float* __restrict__ placeholder2) {
-  float T_dense_rf[1];
-  __shared__ float red_buf0[64];
-  __shared__ float T_dense[1];
-  T_dense_rf[(0)] = 0.000000e+00f;
-  for (int k_outer = 0; k_outer < 13; ++k_outer) {
-    if (((k_outer * 64) + ((int)threadIdx.x)) < 784) {
-      T_dense_rf[(0)] = (T_dense_rf[(0)] + (placeholder[(((k_outer * 64) + ((int)threadIdx.x)))] * placeholder1[((((((int)blockIdx.x) * 784) + (k_outer * 64)) + ((int)threadIdx.x)))]));
-    }
-  }
-  __syncthreads();
-  ((volatile float*)red_buf0)[(((int)threadIdx.x))] = T_dense_rf[(0)];
-  __syncthreads();
-  if (((int)threadIdx.x) < 32) {
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 32))]);
-  }
-  __syncthreads();
-  if (((int)threadIdx.x) < 16) {
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 16))]);
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 8))]);
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 4))]);
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 2))]);
-    ((volatile float*)red_buf0)[(((int)threadIdx.x))] = (((volatile float*)red_buf0)[(((int)threadIdx.x))] + ((volatile float*)red_buf0)[((((int)threadIdx.x) + 1))]);
-  }
-  __syncthreads();
-  if (((int)threadIdx.x) == 0) {
-    T_dense[(0)] = ((volatile float*)red_buf0)[(0)];
-  }
-  if (((int)threadIdx.x) == 0) {
-    T_relu[(((int)blockIdx.x))] = max((T_dense[(0)] + placeholder2[(((int)blockIdx.x))]), 0.000000e+00f);
   }
 }
 

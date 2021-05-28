@@ -33,129 +33,137 @@ def loadMnist(path, dataset='test'):
 
 
 
-batch_size = 1
-num_class = 10
-image_shape = (1, 28, 28)
+def main(index):
 
-out_shape = (batch_size, num_class)
+    batch_size = 1
+    num_class = 10
+    image_shape = (1, 28, 28)
 
-mod, params = relay.testing.mlp.get_workload(batch_size)
+    out_shape = (batch_size, num_class)
 
-target = tvm.target.cuda()
-with tvm.transform.PassContext():
-    graphMod = relay.build(mod, target, params=params)
+    mod, params = relay.testing.mlp.get_workload(batch_size)
 
-lib = graphMod.get_lib()
-cudaLib = lib.imported_modules[0]
+    target = tvm.target.cuda()
+    with tvm.transform.PassContext():
+        graphMod = relay.build(mod, target, params=params)
 
-''' saves the source locally in a file named source.cu'''
-with open("source.cu", 'w') as out:
-    out.write(cudaLib.get_source())
+    lib = graphMod.get_lib()
+    cudaLib = lib.imported_modules[0]
 
-outputName = "mnist"
+    ''' saves the source locally in a file named source.cu'''
+    with open("source.cu", 'w') as out:
+        out.write(cudaLib.get_source())
 
-
-''' this code generates ptx code and a json of metadata. I don't use it, so I've left it commented out'''
-#cudaLib.save(outputName + ".ptx")
+    outputName = "mnist"
 
 
-
-ctx = tvm.gpu()
-
-
-js = str(graphMod.get_json())
+    ''' this code generates ptx code and a json of metadata. I don't use it, so I've left it commented out'''
+    #cudaLib.save(outputName + ".ptx")
+    
 
 
-with open("graph.txt", 'w') as out:
-	out.write(js)
-
-js = json.loads(js)
+    ctx = tvm.gpu()
 
 
-with open("graph.json", 'w') as outfile:
-	json.dump(js, outfile)
+    js = str(graphMod.get_json())
 
 
+    with open("graph.txt", 'w') as out:
+	    out.write(js)
 
-dataDir = pathlib.Path("fakedata").resolve()
-
-mndata, imgs, lbls = loadMnist(dataDir)
+    js = json.loads(js)
 
 
-index = 4       #0#11#101
-
-image = imgs[index]
-
-#print(image)
-
-image = (1/255) * image
+    with open("graph.json", 'w') as outfile:
+	    json.dump(js, outfile)
 
 
 
-temp_image = np.zeros((28, 28))
+    dataDir = pathlib.Path("fakedata").resolve()
 
-for i in range(28):
-	for j in range(28):
-		temp_image[i][j] = image[i * 28 + j]
-'''
-for i in range(28):
-	for j in range(14, 28):
-		temp_image[i][j-14] = image[i * 28 + j]
-
-#print(temp_image)
-'''
-
-print(lbls[index])
+    mndata, imgs, lbls = loadMnist(dataDir)
 
 
-true_image = np.zeros((1, 1, 28, 28))
+    #index = 4       #0#11#101
 
-for i in range(28):
-	for j in range(28):
-		value = temp_image[i][j]
-		true_image[0][0][i][j] = value
+    image = imgs[index]
 
 
-true_image = true_image.astype(np.float32)
-
-''' #code that tests a perfect one 
-true_image = np.zeros((1, 1, 28, 28))
-
-for i in range(4, 24):
-	for j in range(12, 15):
-		true_image[0][0][i][j] = 1
-
-true_image = true_image.astype(np.float32)
-print(true_image)
-'''
-
-
-module = graph_runtime.GraphModule(graphMod["default"](ctx))
+    image = (1/255) * image
 
 
 
-module.set_input("data", true_image)
+    temp_image = np.zeros((28, 28))
+
+    for i in range(28):
+	    for j in range(28):
+		    temp_image[i][j] = image[i * 28 + j]
+    '''
+    for i in range(28):
+	    for j in range(14, 28):
+		    temp_image[i][j-14] = image[i * 28 + j]
+
+    #print(temp_image)
+    '''
+
+    print(lbls[index])
+
+
+    true_image = np.zeros((1, 1, 28, 28))
+
+    for i in range(28):
+	    for j in range(28):
+		    value = temp_image[i][j]
+		    true_image[0][0][i][j] = value
+
+
+    true_image = true_image.astype(np.float32)
+
+    ''' #code that tests a perfect one 
+    true_image = np.zeros((1, 1, 28, 28))
+
+    for i in range(4, 24):
+	    for j in range(12, 15):
+		    true_image[0][0][i][j] = 1
+
+    true_image = true_image.astype(np.float32)
+    print(true_image)
+    '''
+
+
+    module = graph_runtime.GraphModule(graphMod["default"](ctx))
 
 
 
-
-module.run()
-
-
-out = module.get_output(0, tvm.nd.empty(out_shape)).asnumpy()
-
-print(out)
-
-
-thing = np.ndarray.flatten(out)
-
-thing2 = []
-for i in thing:
-	thing2.append(i)
-
-
-print(thing2.index(max(thing2)))
+    module.set_input("data", true_image)
 
 
 
 
+    module.run()
+
+
+    out = module.get_output(0, tvm.nd.empty(out_shape)).asnumpy()
+
+    print(out)
+
+
+    thing = np.ndarray.flatten(out)
+
+    thing2 = []
+    for i in thing:
+	    thing2.append(i)
+
+
+    print(thing2.index(max(thing2)))
+
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('index', metavar='index', type=int)
+
+    args = parser.parse_args()
+    
+    main(args.index)

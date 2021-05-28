@@ -26,7 +26,6 @@ def main():
     params = loadParams()
 
 
-    print(params.keys())
 
 
          
@@ -35,7 +34,6 @@ def main():
 
     mod = loadLibrary()
 
-    #4. next, repeat the following procedure: run the function, save the results back, keep going. end if no more functions left
 
 
     #0. null op
@@ -55,13 +53,11 @@ def main():
 
 
 
-    #print(type(params['fc1_weight']))
 
     #2. null op (f1)
-    #n2 = loadData(params['fc1_weight'])
     n2 = loadData(params['p0'])
 
-
+    ''' Example of how to print out the results of a step. '''
     #tmp = np.zeros(shape=(128, 784), dtype=np.float32) 
     #cuda.memcpy_dtoh(tmp, n2)
     #print(tmp)
@@ -81,16 +77,11 @@ def main():
     func = mod.get_function("fused_nn_dense_nn_bias_add_nn_relu_1_kernel0")
     func(n1, n2, n4, n3, block=(64, 1, 1), grid=(128, 1))
 
-    #cuda.memcpy_dtoh(tmp, n4)
-    #print(tmp)
-
 
     #5. null op (p2)
-    #n5 = loadData(params['fc2_weight'])
     n5 = loadData(params['p2'])
 
     #6. null op (p3)
-    #n6 = loadData(params['fc2_bias'])
     n6 = loadData(params['p3'])
 
 
@@ -99,20 +90,13 @@ def main():
     tmp = np.zeros(shape=(1, 64), dtype=np.float32)
     n7 = loadData(tmp)
     func = mod.get_function("fused_nn_dense_nn_bias_add_nn_relu_kernel0")
-    #func(n4, n5, n7, n6, block=(64, 1, 1))
     func(n4, n5, n7, n6, block=(64, 1, 1), grid=(64, 1))
 
 
-    #cuda.memcpy_dtoh(tmp, n7)
-    #print(tmp)
-
-
     #8. null op (p4)
-    #n8 = loadData(params['fc3_weight'])
     n8 = loadData(params['p4'])
 
     #9. null op (p5)
-    #n9 = loadData(params['fc3_bias'])
     n9 = loadData(params['p5'])
 
 
@@ -122,11 +106,9 @@ def main():
     n10 = loadData(tmp)
 
     func = mod.get_function("fused_nn_dense_nn_bias_add_kernel0")
-    #func(n7, n8, n10, n9, block=(10, 1, 1))
     func(n7, n8, n10, n9, block=(64, 1, 1), grid=(10, 1))
 
     cuda.memcpy_dtoh(tmp, n10)
-    print(tmp)
     
 
     #11. fused_nn_softmax"
@@ -136,13 +118,10 @@ def main():
     n11 = loadData(tmp)
 
     func = mod.get_function("fused_nn_softmax_kernel0")
-    #func(n10, n11, block=(10, 1, 1))
     func(n10, n11, block=(32, 1, 1), grid=(10, 1))
 
     cuda.memcpy_dtoh(tmp, n11)
     print(tmp)
-
-    #5. print the final output, and compare to the expected one
 
 
 
@@ -178,6 +157,7 @@ def readData(index):
     return processImage(images[index]), labels[index]
 
 
+''' Loads MNIST data. '''
 def loadMnist(path=pathlib.Path("fakedata").resolve(), dataset='test'):
 	mnistData = MNIST(str(path))
 	
@@ -193,7 +173,7 @@ def loadMnist(path=pathlib.Path("fakedata").resolve(), dataset='test'):
 
 	return mnistData, images, labels
 
-
+''' Launches TVM to get the parameters. '''
 def loadParams():
     batch_size = 1
     num_class = 10
@@ -201,7 +181,6 @@ def loadParams():
 
     mod, params = relay.testing.mlp.get_workload(batch_size)
 
-    print(type(mod))
 
     target = tvm.target.cuda()
     with tvm.transform.PassContext():
@@ -209,7 +188,6 @@ def loadParams():
 
     return graphMod.get_params()
     
-    #return params
 
 
 def loadLibrary():

@@ -31,7 +31,7 @@ def getCtx(remote=False):
 
 
 
-
+''' Parse the given TVM graph in data, and return a kaas request and a list of buffers. '''
 def parse(inp, data, libffCtx, path, params, shapes):
 
 
@@ -92,7 +92,7 @@ def parse(inp, data, libffCtx, path, params, shapes):
         return req, buffers      
 
 
-
+''' Adds the given array to the kv with name node_num. '''
 def addToKV(kv, node_num, arr):
     kv.put(str(node_num), arr)
     nByte = arr.nbytes
@@ -100,7 +100,7 @@ def addToKV(kv, node_num, arr):
     return buff 
 
 
-
+''' Makes a kernel with name i according to the given specifications. '''
 def makeKern(node, i, path, shapes, shape_number, buffers, kv):
     name_func = node["name"] + "_kernel0" 
     shape = shapes[shape_number]
@@ -138,9 +138,9 @@ def run(folder, mode='direct'):
 
     kaasHandle.Invoke(req.toDict())
 
-    c = np.frombuffer(libffCtx.kv.get('11'), dtype=np.float32)
-
-    print(c)
+    # example of how to print a buffer 
+    #c = np.frombuffer(libffCtx.kv.get('11'), dtype=np.float32)
+    #print(c)
 
 if __name__ == "__main__":
 

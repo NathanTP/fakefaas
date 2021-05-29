@@ -39,34 +39,18 @@ def getCtx(remote=False):
 
 
 
-def parse(inp, libffCtx, mode='process'):
+def parse(inp, data, libffCtx, path, params, shapes):
 
-        #fetches data
-        with open("graph.json") as json_file:
-                data = json.load(json_file)
 
-        #print(data)
 
-        params = loadParams()        
-
-        #libffCtx = getCtx(remote=(mode == 'process'))
-        
-
-        #kaasHandle = kaas.getHandle(mode, libffCtx)
-
-        #print(data["nodes"])           
         nodes = data["nodes"]
 
         kerns = []
 
         buffers = []
 
-        #path = pathlib.Path(__file__).resolve().parent / 'mnist.ptx'
-        path = pathlib.Path(__file__).resolve().parent / 'libkaasMicro.cubin'
 
         param_counter = 0
-
-        shapes = getShapes()
 
 
         copy_inp = np.copy(inp)
@@ -74,34 +58,28 @@ def parse(inp, libffCtx, mode='process'):
         input_buffer = kaas.bufferSpec("0", copy_inp.nbytes)
         buffers.append(input_buffer)    
 
-    
-        #print(copy_inp.shape)
         
         for i in range(1, len(nodes)):
-        #for i in range(1, 2):
 
                 output_size = np.array(data["attrs"]["shape"][1][i])
                 ty = data["attrs"]["dltype"][1][i]
                 node = nodes[i]
 
-                #print(output_size)
 
                 if node["op"] == "null":
                     index = "p" + str(param_counter)
-                    param = params[index].asnumpy()
+                    param = params[index]
                     
-                    print(type(param))
-                    #zeros = copy.deepcopy(param)
                     zeros = np.zeros(output_size).astype(ty)
                     
                     np.copyto(zeros, param)
                 
                     param_counter = param_counter + 1
-                                        
+        
+                                
                     buff = addToKV(libffCtx.kv, i, zeros)
                     buffers.append(buff)    
                 else:
-                #output_size = np.array(data["attrs"]["shape"][1][i])
                     ty = data["attrs"]["dltype"][1][i]
                     arr = np.zeros(output_size).astype(ty)
 
@@ -109,18 +87,10 @@ def parse(inp, libffCtx, mode='process'):
                     buffers.append(buff)
 
 
-                    #node = nodes[i]
                     kern = makeKern(node, i, path, shapes, i - param_counter - 1, buffers, libffCtx.kv)                       
-                    
 
-
-                #output_size = np.array(data["attrs"]["shape"][1][i])
-                #buff = addToKV(nodes[i], libffCtx.kv, i, output_size)
-                #buffers.append(buff)
-                #kern = createKern(node, buffers, path, i)
                     kerns.append(kern)
 
-        #print(buffers)
 
 
         
@@ -129,10 +99,6 @@ def parse(inp, libffCtx, mode='process'):
         return req, buffers      
 
 
-#side note: probably there's a structure that contains the inputs with key-value being their name from the graph?
-
-
-#output size is probably temporary since the function shouldn't actually think about the size they have to make 
 
 def addToKV(kv, node_num, arr):
     kv.put(str(node_num), arr)
@@ -140,16 +106,6 @@ def addToKV(kv, node_num, arr):
     buff = kaas.bufferSpec(str(node_num), nByte)
     return buff 
 
-'''
-def addToKV(node_num, kv, output_size, ty):
-        kv.put(str(node_num), np.zeros(output_size).astype(ty))
-        nByte = output_size.nbytes
-        buff = kaas.bufferSpec(str(node_num), nByte)
-        return buff
-'''    
-
-def makeNullKern(node, param_counter, params):
-    return None
 
 
 def makeKern(node, i, path, shapes, shape_number, buffers, kv):
@@ -157,126 +113,42 @@ def makeKern(node, i, path, shapes, shape_number, buffers, kv):
     shape = shapes[shape_number]
 
     
-    #print(name_func)
-    #print(shape[0], shape[1])
-    #print(buffers) 
 
     inputs = []
     for index in range(len(node["inputs"])):
-        #print(node["inputs"][index][0])
         inputs.append(buffers[node["inputs"][index][0]])
 
-
-    #inputs.append(buffers[0])
-    #inputs.append(buffers[0])
-    #print(inputs)
-    #print(np.frombuffer(kv.get('1'), dtype=np.float32).shape)
-
-    #print(inputs)
 
     kern = kaas.kernelSpec(path, name_func, shape[0], shape[1], inputs=inputs, outputs=[buffers[i]])
 
     return kern
 
+def run(folder, mode='direct'):
 
-'''
-def addToKV(node, kv, i, output_size):
-        if node["op"] == "null":
-                kv.put(str(i), np.zeros(output_size).astype('float32'))
-                #nByte = np.prod(output_size) * 4
-                nByte = output_size.nbytes
-                buff = kaas.bufferSpec(str(i), nByte)
-                return buff
-        else:
-                #nByte = np.prod(output_size) * 4
-                nByte = output_size.nbytes
-                buff = kaas.bufferSpec(str(i), nByte)
-                return buff
-'''             
-
-        
-#def createKern(path, name, input_size, output_size, inputs, ouputs):
-        #kern = kaas.kernelSpec 
-
-
-
-def getShapes():
-    return [
-        [(1, 1, 1), (784, 1, 1)],
-        [(128, 1, 1), (64, 1, 1)],
-        [(64, 1, 1), (64, 1, 1)],
-        [(10, 1, 1), (64, 1, 1)],
-        [(1, 1, 1), (32, 1, 1)]
-        ]    
-
-
-
-
-def loadParams():
-    batch_size = 1
-    num_class = 10
-    image_shape = (1, 28, 28)
-
-    mod, params = relay.testing.mlp.get_workload(batch_size)
-
-    #print(type(mod))
-
-    target = tvm.target.cuda()
-    with tvm.transform.PassContext():
-        graphMod = relay.build(mod, target, params=params)
-
-    return graphMod.get_params()
-
-
-
-def processImage(img):
-    new_img = np.zeros(shape=(1, 1, 28, 28), dtype=np.float32)
-    for i in range(28):
-        for j in range(28):
-            new_img[0][0][i][j] = img[i * 28 + j]/255
-
-
-    return new_img
-
-
-
-def readData(index):
     
-    mnistData, images, labels = loadMnist()
-    
-    return processImage(images[index]), labels[index]
+    #load params, input, graph json, code, shapes  
 
 
-def loadMnist(path=pathlib.Path("fakedata").resolve(), dataset='test'):
-	mnistData = MNIST(str(path))
-	
-	if dataset == 'train':
-		images, labels = mnistData.load_training()
-	else:
-		images, labels = mnistData.load_testing()
+    #loads in the source code
+    path = pathlib.Path(__file__).resolve().parent / folder / 'code.cubin' 
+
+    #loads in the graph as a json
+    with open(folder + "/graph.json") as json_file:
+                data = json.load(json_file)
 
 
-	images = np.asarray(images).astype(np.float32)
-	labels = np.asarray(labels).astype(np.uint32)
-
-
-	return mnistData, images, labels
-
-
-
-
-
-
-def run(mode='direct'):
-
-    index = 4
-
-    image, label = readData(index) 
+    sys.path.insert(1, './' + folder)
+    import parserUtils
+    image = parserUtils.readData() 
 
     
     libffCtx = getCtx(remote=(mode == 'process'))
 
-    req, buffers = parse(image, libffCtx)
+    params = parserUtils.loadParams()
+
+    shapes = parserUtils.getShapes()
+
+    req, buffers = parse(image, data, libffCtx, path, params, shapes)
     
     kaasHandle = kaas.getHandle(mode, libffCtx)
 
@@ -287,5 +159,13 @@ def run(mode='direct'):
     #print(image)
     print(c)
 
-run(mode='direct')
-        
+if __name__ == "__main__":
+    
+    folder = 'mnist'
+
+    run(folder, mode='direct')     
+
+
+
+
+   

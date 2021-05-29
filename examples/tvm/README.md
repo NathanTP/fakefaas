@@ -1,11 +1,11 @@
-###Usage:
+### Usage:
 Running parser.py converts a specified TVM graph into a kaas request, and then runs it. 
 <br>
 To run, use: `python parser.py [model]`, where model is the model you want to run. For example, to run the MNIST model, run `python parser.py mnist`. See setup to see how to setup a model.
 <br>
 
 
-###Setup: 
+### Setup: 
 To setup a model, create a folder with the name of the model, and inside it create a file `parserUtils.py` with the following methods: <br>
 1. `readData()` - gets the input  <br>
 2. `getGraph()` - gets the graph json of the TVM model <br>

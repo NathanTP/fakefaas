@@ -11,10 +11,17 @@ import pathlib
 
 import numpy as np
 
+import json
+
 def loadParams():
     params = pickle.load(open("mnist/params", 'rb'))
 
     return params
+
+
+def getPath(): 
+    path = pathlib.Path(__file__).resolve().parent / 'code.cubin' 
+    return path
 
 
 def getShapes():
@@ -26,6 +33,11 @@ def getShapes():
         [(1, 1, 1), (32, 1, 1)]
         ]    
 
+
+def getGraph(): 
+    with open("mnist/graph.json") as json_file:
+            data = json.load(json_file)
+    return data
 
 
 def processImage(img):

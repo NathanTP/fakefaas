@@ -125,23 +125,14 @@ def makeKern(node, i, path, shapes, shape_number, buffers, kv):
 
 def run(folder, mode='direct'):
 
-    
-    #load params, input, graph json, code, shapes  
-
-
-    #loads in the source code
-    path = pathlib.Path(__file__).resolve().parent / folder / 'code.cubin' 
-
-    #loads in the graph as a json
-    with open(folder + "/graph.json") as json_file:
-                data = json.load(json_file)
-
-
     sys.path.insert(1, './' + folder)
     import parserUtils
     image = parserUtils.readData() 
 
-    
+    data = parserUtils.getGraph()
+   
+    path = parserUtils.getPath()
+ 
     libffCtx = getCtx(remote=(mode == 'process'))
 
     params = parserUtils.loadParams()

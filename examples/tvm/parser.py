@@ -12,15 +12,8 @@ import numpy as np
 
 import json
 
-import copy 
 
-from mnist import MNIST
 
-from tvm import relay
-from tvm.relay import testing
-import tvm
-from tvm import te
-from tvm.contrib import graph_runtime
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
@@ -147,14 +140,17 @@ def run(folder, mode='direct'):
 
     c = np.frombuffer(libffCtx.kv.get('11'), dtype=np.float32)
 
-    #print(image)
     print(c)
 
 if __name__ == "__main__":
-    
-    folder = 'mnist'
 
-    run(folder, mode='direct')     
+    import argparse
+    argParser = argparse.ArgumentParser()
+    argParser.add_argument('folder', metavar='folder', type=str)
+
+    args = argParser.parse_args()    
+
+    run(args.folder, mode='direct')     
 
 
 

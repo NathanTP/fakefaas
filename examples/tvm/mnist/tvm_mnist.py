@@ -13,8 +13,7 @@ from tvm import relay
 from tvm.relay import testing
 import tvm
 from tvm import te
-from tvm.contrib import graph_runtime
-
+import tvm.contrib.graph_executor as runtime
 
 def loadMnist(path, dataset='test'):
 	mnistData = MNIST(str(path))
@@ -65,7 +64,7 @@ def main(index):
     ctx = tvm.gpu()
 
 
-    js = str(graphMod.get_json())
+    js = str(graphMod.get_graph_json())
 
 
     with open("graph.txt", 'w') as out:
@@ -131,8 +130,7 @@ def main(index):
     '''
 
 
-    module = graph_runtime.GraphModule(graphMod["default"](ctx))
-
+    module = runtime.GraphModule(graphMod["default"](ctx))
 
 
     module.set_input("data", true_image)

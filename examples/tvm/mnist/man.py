@@ -16,44 +16,25 @@ from tvm.contrib import graph_runtime
 
 
 def main():
-
     index = 0
 
-
-
     image, label = readData(index)
-
     params = loadParams()
 
-
-
-
-         
-
     #load the library onto the gpu
-
     mod = loadLibrary()
-
-
 
     #0. null op
     n0 = loadData(image)
-
     
     tmp = np.zeros(shape=(1, 784), dtype=np.float32)
 
-
     n1 = loadData(tmp)
-
 
     #1. fused_nn_batch_flatten
     func = mod.get_function("fused_nn_batch_flatten_kernel0")
     func(n1, n0, block=(784, 1, 1))
     
-
-
-
-
     #2. null op (f1)
     n2 = loadData(params['p0'])
 
@@ -70,8 +51,6 @@ def main():
 
     #4. first relu 
     tmp = np.zeros(shape=(128), dtype=np.float32)
-
-
     n4 = loadData(tmp)
 
     func = mod.get_function("fused_nn_dense_nn_bias_add_nn_relu_1_kernel0")
@@ -84,14 +63,12 @@ def main():
     #6. null op (p3)
     n6 = loadData(params['p3'])
 
-
     #7. fused_nn_dense_nn_bias_add_nn_relu"
-
     tmp = np.zeros(shape=(1, 64), dtype=np.float32)
     n7 = loadData(tmp)
+
     func = mod.get_function("fused_nn_dense_nn_bias_add_nn_relu_kernel0")
     func(n4, n5, n7, n6, block=(64, 1, 1), grid=(64, 1))
-
 
     #8. null op (p4)
     n8 = loadData(params['p4'])
@@ -99,9 +76,7 @@ def main():
     #9. null op (p5)
     n9 = loadData(params['p5'])
 
-
     #10. fused_nn_dense_nn_bias_add"
-
     tmp = np.zeros(shape=(1, 10), dtype=np.float32) 
     n10 = loadData(tmp)
 
@@ -110,10 +85,7 @@ def main():
 
     cuda.memcpy_dtoh(tmp, n10)
     
-
     #11. fused_nn_softmax"
-
-
     tmp = np.zeros(shape=(1, 10), dtype=np.float32)
     n11 = loadData(tmp)
 
@@ -131,7 +103,6 @@ def loadData(data):
         data = convertArray(data)
     a_gpu = cuda.mem_alloc(data.nbytes)
     cuda.memcpy_htod(a_gpu, data)
-
     return a_gpu
 
 
@@ -145,15 +116,11 @@ def processImage(img):
         for j in range(28):
             new_img[0][0][i][j] = img[i * 28 + j]/255
 
-
     return new_img
 
 
-
 def readData(index):
-    
     mnistData, images, labels = loadMnist()
-    
     return processImage(images[index]), labels[index]
 
 
@@ -166,12 +133,10 @@ def loadMnist(path=pathlib.Path("fakedata").resolve(), dataset='test'):
 	else:
 		images, labels = mnistData.load_testing()
 
-
 	images = np.asarray(images).astype(np.float32)
 	labels = np.asarray(labels).astype(np.uint32)
-
-
 	return mnistData, images, labels
+
 
 ''' Launches TVM to get the parameters. '''
 def loadParams():
@@ -181,14 +146,12 @@ def loadParams():
 
     mod, params = relay.testing.mlp.get_workload(batch_size)
 
-
     target = tvm.target.cuda()
     with tvm.transform.PassContext():
         graphMod = relay.build(mod, target, params=params)
 
     return graphMod.get_params()
     
-
 
 def loadLibrary():
     mod = SourceModule("""

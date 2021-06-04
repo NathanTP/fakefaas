@@ -41,12 +41,9 @@ def parse(inp, data, libffCtx, path, params, shapes):
                     index = "p" + str(param_counter)
                     param = params[index]
 
-                    zeros = np.zeros(output_size).astype(ty)                    
-                    np.copyto(zeros, param)
-                
                     param_counter = param_counter + 1
                                 
-                    buff = addToKV(libffCtx.kv, i, zeros)
+                    buff = addToKV(libffCtx.kv, i, param)
                     buffers.append(buff)    
                 else:
                     ty = data["attrs"]["dltype"][1][i]

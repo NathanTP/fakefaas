@@ -11,6 +11,9 @@ from tvm import te
 import tvm.contrib.graph_executor as runtime
 
 
+''' Program that uses TVM to completely run an MNIST example. Specify which MNIST input to use with its index. '''
+
+
 def loadMnist(path, dataset='test'):
 	mnistData = MNIST(str(path))	
 	if dataset == 'train':

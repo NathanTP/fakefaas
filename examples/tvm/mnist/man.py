@@ -15,6 +15,9 @@ from tvm import te
 from tvm.contrib import graph_runtime
 
 
+'''Manual parser that uses PyCuda to run TVM's MNIST model. Intended to assist debugging. '''
+
+
 def main():
     index = 0
 

@@ -12,4 +12,4 @@ libkaasMicro.so: kerns.o
 	$(NVCC) -c $< $(NVCC_OPTS)
 
 clean:
-	rm -f libvadd.cubin libvadd.so *.o
+	rm -f *.cubin *.o

@@ -83,5 +83,5 @@ def makeParams():
 
     pickle.dump(new_dict, open("params", "wb"))
     
-if __name__ == "__main":
+if __name__ == "__main__":
     makeParams() 

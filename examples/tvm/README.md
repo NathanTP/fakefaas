@@ -18,6 +18,11 @@ To setup a model, create a folder with the name of the model, and inside it crea
 Also, to see where the grid and block sizes come from, build the custom version of TVM for kaas. See https//github.com/NathanTP/tvm. 
 
 
+Model specific setup:
+
+MNIST: Run the Makefile inside the MNIST directory.
+
+
 
 ### Dependencies: 
 Requires working installation of kaas, python-mnist, and TVM. The custom version of TVM for the project is suggested. 

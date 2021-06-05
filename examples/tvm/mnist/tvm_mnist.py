@@ -11,7 +11,7 @@ from tvm import te
 import tvm.contrib.graph_executor as runtime
 
 
-''' Program that uses TVM to completely run an MNIST example. Specify which MNIST input to use with its index. '''
+''' Program that uses TVM to completely run an MNIST example. Generates source.cu, graph.txt, and graph.json. Specify which MNIST input to use with its index. '''
 
 
 def loadMnist(path, dataset='test'):
@@ -83,7 +83,7 @@ def main(index):
 
     #print(temp_image)
     '''
-    print(lbls[index])
+    #print(lbls[index])
     true_image = np.zeros((1, 1, 28, 28))
     for i in range(28):
 	    for j in range(28):
@@ -105,13 +105,13 @@ def main(index):
     module.set_input("data", true_image)
     module.run()
     out = module.get_output(0, tvm.nd.empty(out_shape)).asnumpy()
-    print(out)
+    #print(out)
 
     thing = np.ndarray.flatten(out)
     thing2 = []
     for i in thing:
 	    thing2.append(i)
-    print(thing2.index(max(thing2)))
+    #print(thing2.index(max(thing2)))
 
 
 

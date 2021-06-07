@@ -74,7 +74,8 @@ def testCopy(mode):
     return True
 
 def main():
-    for mode in ['direct', 'process', 'Anna']:
+    #for mode in ['direct', 'process', 'Anna']:
+    for mode in ['direct', 'process']:
         print("Running simple test (" + mode + "):")
         with ff.testenv('simple', mode):
             success = testSimple(mode)

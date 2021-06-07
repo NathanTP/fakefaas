@@ -157,14 +157,15 @@ class Shmm(kv):
         """ Currently, value must be binary."""
         self.serialize = serialize
         self.size = size
-        self.map = {}   # key: name; value: offset
+        self.map = {}   # key: name; value: (offset, number of bytes)
         self.shm = shared_memory.SharedMemory(create=True, size=size)
         self.offset = 0
 
     def put(self, k, v, profile=None, profFinal=True):
-        with timer("t_serialize", profile, final=profFinal):
-            if self.serialize:
-                v = pickle.dumps(v)
+        if type(v) is not bytearray or type(v) is not bytes:
+            with timer("t_serialize", profile, final=profFinal):
+                if self.serialize:
+                    v = pickle.dumps(v)
         num_bytes = len(v)
         if self.offset + num_bytes >= self.size:
             raise ValueError("Not enough shared memory space.")
@@ -182,6 +183,8 @@ class Shmm(kv):
         buf = self.shm.buf 
         with timer("t_read", profile, final=profFinal):
             raw = buf[tpl[0]:tpl[0]+tpl[1]]
+        if type(raw) is bytearray or type(raw) is bytes:
+            return raw
         with timer("t_deserialize", profile, final=profFinal):
             if self.serialize:
                 return pickle.loads(raw)

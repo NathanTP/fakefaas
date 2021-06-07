@@ -1,10 +1,11 @@
 import redis
-import anna.client
-import anna.lattices
+#import anna.client
+#import anna.lattices
 import time
 import pickle
 import abc
 import copy
+from multiprocessing import shared_memory
 from .util import *
 
 class KVKeyError(Exception):
@@ -148,6 +149,53 @@ class Anna(kv):
 
     def destroy(self):
         pass
+
+class Shmm(kv):
+    """ A local-like kv store. With python shared_memory package."""
+
+    def __init__(self, size=4096, serialize=True):
+        """ Currently, value must be binary."""
+        self.serialize = serialize
+        self.size = size
+        self.map = {}   # key: name; value: offset
+        self.shm = shared_memory.SharedMemory(create=True, size=size)
+        self.offset = 0
+
+    def put(self, k, v, profile=None, profFinal=True):
+        with timer("t_serialize", profile, final=profFinal):
+            if self.serialize:
+                v = pickle.dumps(v)
+        num_bytes = len(v)
+        if self.offset + num_bytes >= self.size:
+            raise ValueError("Not enough shared memory space.")
+        buf = self.shm.buf
+        with timer("t_write", profile, final=profFinal):
+            buf[self.offset:self.offset+num_bytes] = v
+        self.map[k] = (self.offset, num_bytes)
+        self.offset += num_bytes
+
+    def get(self, k, profile=None, profFinal=True):
+        try:
+            tpl = self.map[k]
+        except KeyError:
+            raise KVKeyError(k)
+        buf = self.shm.buf 
+        with timer("t_read", profile, final=profFinal):
+            raw = buf[tpl[0]:tpl[0]+tpl[1]]
+        with timer("t_deserialize", profile, final=profFinal):
+            if self.serialize:
+                return pickle.loads(raw)
+            else:
+                return raw
+
+    def delete(self, k):
+        """ Not allowed to delete keys. """
+        pass
+
+    def destroy(self):
+        del self.map
+        self.shm.close()
+        self.shm.unlink()
 
 class Local(kv):
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is

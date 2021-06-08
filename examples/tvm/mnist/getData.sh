@@ -1,7 +1,7 @@
 #!/bin/bash
 
-if [ ! -d ./data ]; then
-    mkdir data
+if [ ! -d ./fakedata ]; then
+    mkdir fakedata
 fi
 
 if [ -d /nscratch/datasets/mnist ]; then

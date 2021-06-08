@@ -13,6 +13,7 @@ code.cubin: mod.cu
 	$(NVCC) -c $< $(NVCC_OPTS) 
 
 run: code.cubin  
+	./getData.sh
 	${PYTHON} tvm_mnist.py ${INDEX}
 	${PYTHON} parserUtils.py
     

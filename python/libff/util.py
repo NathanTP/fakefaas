@@ -5,6 +5,7 @@ import jsonpickle as json
 import pathlib
 import subprocess as sp
 import redis
+import os
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisConf = pathlib.Path(__file__).parent / 'redis.conf'
@@ -174,16 +175,24 @@ def testenv(testName, mode):
     up and running and kills it after the test."""
     if mode == 'process':
         redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
-
+    if mode == 'Anna':
+        cwd = os.environ['ANNA']
+        annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd=cwd)
+    
     try:
         # Redis takes a sec to boot up
-        time.sleep(0.1)
+        time.sleep(0.5)
         yield
     except redis.exceptions.ConnectionError as e:
         redisProc.terminate()
         serverOut = redisProc.stdout.read()
         raise TestError(testName, str(e) + ": " + serverOut)
-
+    finally:
+        if mode == 'Anna':
+            annaProc.terminate()
+            annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd=cwd)
+            #annaTerm.wait(timeout=30)
+            time.sleep(0.5)
     if mode == 'process':
         redisProc.terminate()
         # It takes a while for redis to release the port after exiting

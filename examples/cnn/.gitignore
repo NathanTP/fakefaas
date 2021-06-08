@@ -1,4 +1,5 @@
 *.so
 *.cubin
 *.o
+data
 __pycache__

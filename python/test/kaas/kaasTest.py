@@ -2,6 +2,7 @@ import pathlib
 import math
 from pprint import pprint
 import sys
+import subprocess as sp
 
 import libff as ff
 import libff.kv
@@ -197,6 +198,11 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         mode = sys.argv[1]
+
+    if not (testPath / 'kerns' / 'libkaasMicro.cubin').exists():
+        print("Test cubin not available, building now:")
+        sp.call(["make"], cwd=(testPath / 'kerns'))
+        print("libkaasMicro.cubin built sucessefully\n")
 
     if not libff.invoke.cudaAvailable:
         print("KaaS requires CUDA support from libff")

@@ -6,6 +6,7 @@ import pickle
 import abc
 import copy
 from multiprocessing import shared_memory
+from multiprocessing import sharedctypes
 from .util import *
 
 class KVKeyError(Exception):
@@ -151,7 +152,8 @@ class Anna(kv):
         pass
 
 class Shmm(kv):
-    """ A local-like kv store. With python shared_memory package."""
+    """ A local-like kv store. With python shared_memory package.
+    Not allowed to modify the existing values."""
 
     def __init__(self, size=4096, serialize=True):
         """ Currently, value must be binary."""
@@ -162,10 +164,9 @@ class Shmm(kv):
         self.offset = 0
 
     def put(self, k, v, profile=None, profFinal=True):
-        if type(v) is not bytearray or type(v) is not bytes:
-            with timer("t_serialize", profile, final=profFinal):
-                if self.serialize:
-                    v = pickle.dumps(v)
+        with timer("t_serialize", profile, final=profFinal):
+            if self.serialize:
+                v = pickle.dumps(v)
         num_bytes = len(v)
         if self.offset + num_bytes >= self.size:
             raise ValueError("Not enough shared memory space.")
@@ -183,13 +184,11 @@ class Shmm(kv):
         buf = self.shm.buf 
         with timer("t_read", profile, final=profFinal):
             raw = buf[tpl[0]:tpl[0]+tpl[1]]
-        if type(raw) is bytearray or type(raw) is bytes:
-            return raw
         with timer("t_deserialize", profile, final=profFinal):
             if self.serialize:
                 return pickle.loads(raw)
             else:
-                return raw
+                return bytes(raw)
 
     def delete(self, k):
         """ Not allowed to delete keys. """

@@ -8,8 +8,10 @@ import sys
 def testSimple(mode):
     if mode == 'direct':
         kv = ff.kv.Local()
-    elif mode == 'Anna':
-        kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
+    #elif mode == 'Anna':
+    #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
+    elif mode == 'sharemem':
+        kv = ff.kv.Shmm()
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -24,8 +26,24 @@ def testSimple(mode):
         print("Got: ", aFetched)
         return False
 
-    if mode == 'Anna':
-        return True
+    #if mode == 'Anna':
+    #    return True
+    if mode == 'sharemem':
+        b = np.arange(20, dtype=np.uint32)
+        kv.put('testB', b)
+        c = b'helloworld!'
+        kv.put('testC', c)
+        d = bytearray([10, 30, 32, 9])
+        kv.put('testD', d)
+        cFetched = kv.get('testC')
+        if c != b'helloworld!':
+            print("FAIL: did not read what I wrote")
+            print("Expected: ", c)
+            print("Got: ", cFetched)
+            return False
+        else:
+            kv.destroy()
+            return True
 
     kv.delete('testSimpleA')
 
@@ -51,8 +69,10 @@ def testSimple(mode):
 def testCopy(mode):
     if mode == 'direct':
         kv = ff.kv.Local(copyObjs=True)
-    elif mode == 'Anna':
-        kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
+    #elif mode == 'Anna':
+    #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
+    elif mode == 'sharemem':
+        kv = ff.kv.Shmm()
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -71,10 +91,13 @@ def testCopy(mode):
         print("Got: ", aGot)
         return False
 
+    if mode == 'sharemem':
+        kv.destroy()
     return True
 
 def main():
-    for mode in ['direct', 'process', 'Anna']:
+    #for mode in ['direct', 'process', 'Anna']:
+    for mode in ['direct', 'process', 'sharemem']:
         print("Running simple test (" + mode + "):")
         with ff.testenv('simple', mode):
             success = testSimple(mode)

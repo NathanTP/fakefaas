@@ -183,7 +183,6 @@ class Shmm(kv):
         total = self.offset + num_bytes + 20    # careful if total exceeds 10 bytes
         self.mm.seek(0)
         self.mm.write(bytes(str(total), 'utf-8'))
-        self.sema.release()
         if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
         self.mm.seek(self.offset)
@@ -193,6 +192,7 @@ class Shmm(kv):
         self.mm.seek(self.offset+20)
         with timer("t_write", profile, final=profFinal):
             self.mm.write(v)
+        self.sema.release()
 
     def get(self, k, profile=None, profFinal=True):
         find = False

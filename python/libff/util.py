@@ -6,6 +6,8 @@ import pathlib
 import subprocess as sp
 import redis
 import os
+import posix_ipc
+import mmap
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisConf = pathlib.Path(__file__).parent / 'redis.conf'
@@ -178,7 +180,13 @@ def testenv(testName, mode):
     if mode == 'Anna':
         cwd = os.environ['ANNA']
         annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd=cwd)
-    
+    if mode == 'sharemem':
+        memory = posix_ipc.SharedMemory("share", posix_ipc.O_CREX, size=10000000000)
+        sema = posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
+        mapfile = mmap.mmap(memory.fd, memory.size)
+        memory.close_fd()
+        mapfile.write(b'10')
+        mapfile.close()
     try:
         # Redis takes a sec to boot up
         time.sleep(0.5)
@@ -193,7 +201,11 @@ def testenv(testName, mode):
             annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd=cwd)
             #annaTerm.wait(timeout=30)
             time.sleep(0.5)
-    if mode == 'process':
-        redisProc.terminate()
-        # It takes a while for redis to release the port after exiting
-        time.sleep(0.5)
+        if mode == 'sharemem':
+            posix_ipc.unlink_shared_memory("share")
+            posix_ipc.unlink_semaphore("share")
+            time.sleep(0.5)
+        if mode == 'process':
+            redisProc.terminate()
+            # It takes a while for redis to release the port after exiting
+            time.sleep(0.5)

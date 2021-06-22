@@ -1,8 +1,8 @@
 import libff as ff
 import libff.kv
 import numpy as np
-import time
 import sys
+import subprocess as sp
 
 # Tests the most basic put/get/delete interface on default options for the kv
 def testSimple(mode):
@@ -17,8 +17,8 @@ def testSimple(mode):
 
     a = np.arange(10, dtype=np.uint32)
 
-    kv.put('testSimpleA', a)
-    aFetched = kv.get('testSimpleA')
+    kv.put('testA', a)
+    aFetched = kv.get('testA')
 
     if not np.array_equal(a, aFetched):
         print("FAIL: did not read what I wrote")
@@ -45,15 +45,15 @@ def testSimple(mode):
             kv.destroy()
             return True
 
-    kv.delete('testSimpleA')
+    kv.delete('testA')
 
     keyDeleted = False
     try:
-        aDeleted = kv.get('testSimpleA')
+        aDeleted = kv.get('testA')
     except libff.kv.KVKeyError as e:
-        if e.key != 'testSimpleA':
+        if e.key != 'testA':
             print("Exception reported wrong key")
-            print("\tExpected: testSimpleA")
+            print("\tExpected: testA")
             print("\tGot: ",e.key)
             return False
         keyDeleted = True
@@ -77,13 +77,13 @@ def testCopy(mode):
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
     a = np.arange(10, dtype=np.uint32)
-    kv.put('testSimpleA', a)
+    kv.put('testA', a)
 
     aOrig = a.copy()
 
     a[0] = 42
 
-    aGot = kv.get('testSimpleA')
+    aGot = kv.get('testA')
 
     if not np.array_equal(aOrig, aGot):
         print("FAIL: KV didn't make a copy")
@@ -93,6 +93,17 @@ def testCopy(mode):
 
     if mode == 'sharemem':
         kv.destroy()
+    return True
+
+# Test multiprocessing by using subprocess
+def testMultiproc(mode):
+    if mode == 'sharemem':
+        try:
+            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test1.py"])
+            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test2.py"])
+            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test3.py"])
+        except:
+            return False
     return True
 
 def main():
@@ -116,4 +127,14 @@ def main():
         else:
             sys.exit(1)
 
-main()
+        print("Running multiproc test (" + mode + "):")
+        with ff.testenv('multiproc', mode):
+            success = testMultiproc(mode)
+
+        if success:
+            print("PASS")
+        else:
+            sys.exit(1)
+
+if __name__ == "__main__":
+    main()

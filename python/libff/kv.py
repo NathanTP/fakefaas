@@ -7,6 +7,7 @@ import abc
 import copy
 import posix_ipc
 import mmap
+import sys
 from .util import *
 
 class KVKeyError(Exception):
@@ -159,11 +160,11 @@ class Shmm(kv):
         """ Currently, value must be binary."""
         """ Currently, value must be binary."""
         self.serialize = serialize
-        self.offset = 10
+        self.offset = 8
         #self.map = {} or, we can serialize it and put it in the shmm
         # key: name; value: (offset, number of bytes)
         # In context manager, start posix_ipc and terminate
-        # [10 offset, 10 key, 10 size, val, 10 key, 10 size, val, ...]
+        # [8 offset, 12 key, 8 size, val, 12 key, 8 size, val, ...]
         self.shm = posix_ipc.SharedMemory("share")
         self.mm = mmap.mmap(self.shm.fd, self.shm.size)
         self.shm.close_fd()
@@ -179,41 +180,34 @@ class Shmm(kv):
                 v = pickle.dumps(v)
         num_bytes = len(v)
         self.sema.acquire()
-        self.offset = int(self.mm[:10].rstrip(b'\x00'))
+        self.offset = int.from_bytes(self.mm[:8], sys.byteorder)
         total = self.offset + num_bytes + 20    # careful if total exceeds 10 bytes
-        self.mm.seek(0)
-        self.mm.write(bytes(str(total), 'utf-8'))
+        self.mm[:8] = total.to_bytes(8, sys.byteorder)
         if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
-        self.mm.seek(self.offset)
-        self.mm.write(bytes(k, 'utf-8'))
-        self.mm.seek(self.offset+10)
-        self.mm.write(bytes(str(num_bytes), 'utf-8'))
-        self.mm.seek(self.offset+20)
+        self.mm[self.offset: self.offset+12] = bytes(k, 'utf-8') +\
+            bytes(12 - len(bytes(k, 'utf-8')))
+        self.mm[self.offset+12: self.offset+20] = num_bytes.to_bytes(8, sys.byteorder)
         with timer("t_write", profile, final=profFinal):
-            self.mm.write(v)
+            self.mm[self.offset+20: self.offset+20+num_bytes] = v
         self.sema.release()
 
     def get(self, k, profile=None, profFinal=True):
         find = False
-        index = 10
+        index = 8
         self.sema.acquire()
-        while index < self.mm.size():
-            s = self.mm[index:index+10].rstrip(b'\x00').decode("utf-8")
-            index += 10
-            st = self.mm[index:index+10].rstrip(b'\x00').decode("utf-8")
+        self.offset = int.from_bytes(self.mm[:8], sys.byteorder)
+        self.sema.release()
+        while index < self.offset:
+            s = self.mm[index:index+12].rstrip(b'\x00').decode("utf-8")
+            index += 20
+            num_bytes = int.from_bytes(self.mm[index-8:index], sys.byteorder)
             if s == k:
                 find = True
                 break
-            if st == '':
-                break
-            num_bytes = int(st)
-            index += 10 + num_bytes
-        self.sema.release()
+            index += num_bytes
         if not find:
             raise KVKeyError(k)
-        num_bytes = int(st)
-        index += 10
         with timer("t_read", profile, final=profFinal):
             raw = self.mm[index:index+num_bytes]
         with timer("t_deserialize", profile, final=profFinal):

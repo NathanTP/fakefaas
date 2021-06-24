@@ -98,11 +98,12 @@ def testCopy(mode):
 # Test multiprocessing by using subprocess
 def testMultiproc(mode):
     if mode == 'sharemem':
-        try:
-            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test1.py"])
-            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test2.py"])
-            sp.check_output(["/opt/anaconda3/envs/faas/bin/python", "./python/test/kv/multiproc/test3.py"])
-        except:
+        pypath = sys.executable
+        p1 = sp.Popen([pypath, "./multiproc/test1.py"])
+        p2 = sp.Popen([pypath, "./multiproc/test2.py"])
+        p3 = sp.Popen([pypath, "./multiproc/test3.py"])
+        p3.wait()
+        if p3.returncode != 0:
             return False
     return True
 

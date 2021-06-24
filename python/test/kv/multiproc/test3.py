@@ -1,8 +1,10 @@
 import libff as ff
 import libff.kv
 import numpy as np
+import time
 
 if __name__ == '__main__':
+    time.sleep(1)
     kv = ff.kv.Shmm(serialize=True)
     kv.put('testC', b'mynameisyou')
     b = np.arange(10, dtype=np.uint32)

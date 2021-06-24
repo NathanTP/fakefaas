@@ -3,3 +3,5 @@ __pycache__
 optModel.onnx
 *.o
 *.so
+python/libff.egg-info/
+python/test/kaas/dump.rdb

@@ -11,7 +11,7 @@ def testSimple(mode):
     #elif mode == 'Anna':
     #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     elif mode == 'sharemem':
-        kv = ff.kv.Shmm()
+        kv = ff.kv.Shmmap()
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -72,7 +72,7 @@ def testCopy(mode):
     #elif mode == 'Anna':
     #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     elif mode == 'sharemem':
-        kv = ff.kv.Shmm()
+        kv = ff.kv.Shmmap()
     else:
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
 
@@ -127,7 +127,7 @@ def main():
             print("PASS")
         else:
             sys.exit(1)
-
+        
         print("Running multiproc test (" + mode + "):")
         with ff.testenv('multiproc', mode):
             success = testMultiproc(mode)

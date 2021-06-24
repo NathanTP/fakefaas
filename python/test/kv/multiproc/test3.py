@@ -5,7 +5,7 @@ import time
 
 if __name__ == '__main__':
     time.sleep(1)
-    kv = ff.kv.Shmm(serialize=True)
+    kv = ff.kv.Shmmap(serialize=True)
     kv.put('testC', b'mynameisyou')
     b = np.arange(10, dtype=np.uint32)
     bFetched = kv.get('testB')

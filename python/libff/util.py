@@ -8,6 +8,7 @@ import redis
 import os
 import posix_ipc
 import mmap
+import sys
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisConf = pathlib.Path(__file__).parent / 'redis.conf'
@@ -185,8 +186,18 @@ def testenv(testName, mode):
         sema = posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
         mapfile = mmap.mmap(memory.fd, memory.size)
         memory.close_fd()
-        mapfile.write(b'10')
+        offset = 8
+        mapfile[:8] = offset.to_bytes(8, sys.byteorder)
         mapfile.close()
+        # only fore test
+        mapmem = posix_ipc.SharedMemory("map", posix_ipc.O_CREX, size=100000)
+        mapmm = mmap.mmap(mapmem.fd, mapmem.size)
+        mapmem.close_fd()
+        offset = 0
+        mapmm[:8] = offset.to_bytes(8, sys.byteorder)
+        mapmm[8:10] = b'{}'
+        mapmm.close()
+
     try:
         # Redis takes a sec to boot up
         time.sleep(0.5)
@@ -204,6 +215,8 @@ def testenv(testName, mode):
         if mode == 'sharemem':
             posix_ipc.unlink_shared_memory("share")
             posix_ipc.unlink_semaphore("share")
+            # for test only
+            posix_ipc.unlink_shared_memory("map")
             time.sleep(0.5)
         if mode == 'process':
             redisProc.terminate()

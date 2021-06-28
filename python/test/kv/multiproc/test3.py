@@ -4,12 +4,17 @@ import numpy as np
 import time
 
 if __name__ == '__main__':
-    time.sleep(1)
-    kv = ff.kv.Shmmap(serialize=True)
-    kv.put('testC', b'mynameisyou')
-    b = np.arange(10, dtype=np.uint32)
-    bFetched = kv.get('testB')
-    if not np.array_equal(b, bFetched):
-        kv.destroy()
-        raise ValueError("value mismatch")
+    kv = ff.kv.Shmmap(serialize=False)
+    for i in range(100, 200):
+        kv.put(str(i), b'mynameisyou')
+        found = False
+        while not found:
+            try:
+                val = kv.get(str(i-100))
+            except ff.kv.KVKeyError:
+                time.sleep(0.05)
+                continue
+            found = True
+        if val != b'helloworld':
+            raise ValueError("Value is wrong.")
     kv.destroy()

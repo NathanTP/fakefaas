@@ -184,12 +184,12 @@ def testenv(testName, mode):
     if mode == 'sharemem':
         memory = posix_ipc.SharedMemory("share", posix_ipc.O_CREX, size=10000000000)
         sema = posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
-        mapfile = mmap.mmap(memory.fd, memory.size)
-        memory.close_fd()
-        offset = 8
-        mapfile[:8] = offset.to_bytes(8, sys.byteorder)
-        mapfile.close()
-        # only fore test
+        #mapfile = mmap.mmap(memory.fd, memory.size)
+        #memory.close_fd()
+        #offset = 8
+        #mapfile[:8] = offset.to_bytes(8, sys.byteorder)
+        #mapfile.close()
+        # only for test
         mapmem = posix_ipc.SharedMemory("map", posix_ipc.O_CREX, size=100000)
         mapmm = mmap.mmap(mapmem.fd, mapmem.size)
         mapmem.close_fd()

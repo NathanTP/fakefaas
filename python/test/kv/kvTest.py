@@ -3,6 +3,8 @@ import libff.kv
 import numpy as np
 import sys
 import subprocess as sp
+import posix_ipc
+import mmap
 
 # Tests the most basic put/get/delete interface on default options for the kv
 def testSimple(mode):
@@ -103,8 +105,15 @@ def testMultiproc(mode):
         p2 = sp.Popen([pypath, "./multiproc/test2.py"])
         p3 = sp.Popen([pypath, "./multiproc/test3.py"])
         p3.wait()
-        if p3.returncode != 0:
+        p2.wait()
+        p1.wait()
+        if p3.returncode != 0 or p2.returncode != 0:
             return False
+        memory = posix_ipc.SharedMemory("share")
+        mapfile = mmap.mmap(memory.fd, memory.size)
+        memory.close_fd()
+        print(mapfile[:1000].rstrip(b'\x00'))
+        mapfile.close()
     return True
 
 def main():
@@ -138,4 +147,5 @@ def main():
             sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    with ff.testenv('multiproc', 'sharemem'):
+        print(testMultiproc('sharemem'))

@@ -175,7 +175,7 @@ class Shmm(kv):
         #    raise ValueError("Duplicate key")
         # detection is not implemented
         if len(k) > 12:
-            raise ValueError("length of key exceeds")
+            raise ValueError("length of key exceeds 12, please try a smaller length.")
         with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
                 v = pickle.dumps(v)
@@ -185,11 +185,11 @@ class Shmm(kv):
         total = self.offset + num_bytes + 20
         if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
-        self.mm[:8] = total.to_bytes(8, sys.byteorder)
-        self.mm[self.offset: self.offset+12] = bytes(k, 'utf-8') +\
-            bytes(12 - len(bytes(k, 'utf-8')))
-        self.mm[self.offset+12: self.offset+20] = num_bytes.to_bytes(8, sys.byteorder)
         with timer("t_write", profile, final=profFinal):
+            self.mm[:8] = total.to_bytes(8, sys.byteorder)
+            self.mm[self.offset: self.offset+12] = bytes(k, 'utf-8') +\
+                bytes(12 - len(bytes(k, 'utf-8')))
+            self.mm[self.offset+12: self.offset+20] = num_bytes.to_bytes(8, sys.byteorder)
             self.mm[self.offset+20: self.offset+20+num_bytes] = v
         self.sema.release()
 
@@ -254,7 +254,7 @@ class Shmmap(kv):
         self.sema.acquire()
         self.map = json.loads(self.mapmm[8:].rstrip(b'\x00'))   # rstrip might be slow
         if k in self.map.keys():
-            raise ValueError("Duplicate key")
+            raise ValueError("key already exists in the memory, please try to get it.")
         self.offset = int.from_bytes(self.mapmm[:8], sys.byteorder)
         total = self.offset + num_bytes
         if total >= self.mm.size():

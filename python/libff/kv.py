@@ -253,11 +253,9 @@ class Shmmap(kv):
                 v = pickle.dumps(v)
         num_bytes = len(v)
         self.sema.acquire()
-        old = time.time()
         size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
         self.map = pickle.loads(self.mapmm[16:16+size])
         #self.map = json.loads(self.mapmm[16:16+size])
-        print(time.time()-old)
         if k in self.map.keys():
             raise ValueError("Cannot modify existing key: "+k)
         self.offset = int.from_bytes(self.mapmm[:8], sys.byteorder)
@@ -266,17 +264,13 @@ class Shmmap(kv):
             raise ValueError("Not enough shared memory space.")
         self.mapmm[:8] = total.to_bytes(8, sys.byteorder)
         self.map[k] = [self.offset, num_bytes]
-        old = time.time()
         dic = pickle.dumps(self.map)
         #dic = json.dumps(self.map).encode('utf-8')
-        print(time.time()-old)
         size = len(dic)
         if 16+size > self.mapmm.size():
             raise ValueError("Not enough map memory space.")
-        old = time.time()
         self.mapmm[8:16] = size.to_bytes(8, sys.byteorder)
         self.mapmm[16:16+size] = dic
-        print(time.time()-old)
         with timer("t_write", profile, final=profFinal):
             self.mm[self.offset: total] = v
         self.sema.release()

@@ -3,8 +3,8 @@ import libff.kv
 import numpy as np
 import sys
 import subprocess as sp
-import posix_ipc
-import mmap
+#import posix_ipc
+#import mmap
 
 # Tests the most basic put/get/delete interface on default options for the kv
 def testSimple(mode):
@@ -109,11 +109,14 @@ def testMultiproc(mode):
         p1.wait()
         if p3.returncode != 0 or p2.returncode != 0:
             return False
+        '''
+        # for debug only
         memory = posix_ipc.SharedMemory("share")
         mapfile = mmap.mmap(memory.fd, memory.size)
         memory.close_fd()
         print(mapfile[:1000].rstrip(b'\x00'))
         mapfile.close()
+        '''
     return True
 
 def main():
@@ -147,5 +150,4 @@ def main():
             sys.exit(1)
 
 if __name__ == "__main__":
-    with ff.testenv('multiproc', 'sharemem'):
-        print(testMultiproc('sharemem'))
+    main()

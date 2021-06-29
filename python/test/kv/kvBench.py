@@ -29,7 +29,8 @@ def setup_mode(mode):
     elif mode == 'process':
         kv = ff.kv.Redis(pwd=ff.redisPwd, serialize=True)
     else:
-        kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
+        kv = ff.kv.Shmm()
+        #kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     return kv
 
 # Helper function for testing mixed sizes of matrices
@@ -50,11 +51,11 @@ def test_mixed(mode, klst, vlst, is_cold, is_R, is_W):
                 continue
             time_list.append(time_once)
         time_list = np.array(time_list)
-        #print("Whole time list is:")
-        #print(time_list)
-        #print("Mean is: " + str(np.mean(time_list)))
-        #print("Variance is: " + str(np.var(time_list)))
-        #print("-"*30)
+        print("Whole time list is:")
+        print(time_list)
+        print("Mean is: " + str(np.mean(time_list)))
+        print("Variance is: " + str(np.var(time_list)))
+        print("-"*30)
     return time_list
 
 # Helper function for testing one size of matrices
@@ -85,11 +86,11 @@ def test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W):
             time_list = np.array(time_list)
             all_time_list.append(time_list)
             del kv
-            #print("Whole time list is:")
-            #print(time_list)
-            #print("Mean is: " + str(np.mean(time_list)))
-            #print("Variance is: " + str(np.var(time_list)))
-            #print("-"*30)
+            print("Whole time list is:")
+            print(time_list)
+            print("Mean is: " + str(np.mean(time_list)))
+            print("Variance is: " + str(np.var(time_list)))
+            print("-"*30)
     return all_time_list
 
 ''' 
@@ -99,7 +100,8 @@ is_manyRW: whether test with reads and writes many times;
 is_cold: whether test without warming up the cache first. 
 '''
 def time_putAndget(mode, is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True):
-    mode_list = ['direct', 'process', 'Anna']
+    #mode_list = ['direct', 'process', 'Anna']
+    mode_list = ['direct', 'process', 'sharemem']
     assert (mode in mode_list)
     print('Test for ' + mode)
     klst = ["5by5", "100by100", "1000by1000", "5000by5000"]
@@ -116,7 +118,7 @@ def time_putAndget(mode, is_mixed=False, is_manyRW=False, is_cold=True, is_R=Tru
     else:
         return test_not_mixed(mode, klst, vlst, is_manyRW, is_cold, is_R, is_W)
 
-#time_putAndget('process', is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True)
+time_putAndget('sharemem', is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True)
 
 def plot_time_list(is_mixed=False, is_manyRW=False, is_cold=True, is_R=True, is_W=True):
     direct = time_putAndget('direct', is_mixed, is_manyRW, is_cold, is_R, is_W)

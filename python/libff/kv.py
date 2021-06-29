@@ -5,9 +5,12 @@ import time
 import pickle
 import abc
 import copy
-from multiprocessing import shared_memory
-from multiprocessing import sharedctypes
+import posix_ipc
+import mmap
+import sys
+import json
 from .util import *
+import time
 
 class KVKeyError(Exception):
     def __init__(self, key):
@@ -152,38 +155,63 @@ class Anna(kv):
         pass
 
 class Shmm(kv):
-    """ A local-like kv store. With python shared_memory package.
+    """ A local-like kv store. With python posix_ipc package.
     Not allowed to modify the existing values."""
 
-    def __init__(self, size=4096, serialize=True):
-        """ Currently, value must be binary."""
+    def __init__(self, serialize=True):
+        """ Both posix_ipc shared memory and semaphore must be previously
+        created. The view of the shared memory is like: (num of bytes)
+        [8 offset, 12 key, 8 size, val, 12 key, 8 size, val, ...]"""
         self.serialize = serialize
-        self.size = size
-        self.map = {}   # key: name; value: (offset, number of bytes)
-        self.shm = shared_memory.SharedMemory(create=True, size=size)
-        self.offset = 0
+        self.offset = 8
+        #self.map = {} or, we can serialize it and put it in the shmm
+        # key: name; value: (offset, number of bytes)
+        self.shm = posix_ipc.SharedMemory("share")
+        self.mm = mmap.mmap(self.shm.fd, self.shm.size)
+        self.shm.close_fd()
+        self.sema = posix_ipc.Semaphore("share")
 
     def put(self, k, v, profile=None, profFinal=True):
+        #if k in self.map.keys():
+        #    raise ValueError("Duplicate key")
+        # detection is not implemented
+        if len(k) > 12:
+            raise ValueError("length of key exceeds 12, please try a smaller length.")
         with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
                 v = pickle.dumps(v)
         num_bytes = len(v)
-        if self.offset + num_bytes >= self.size:
+        self.sema.acquire()
+        self.offset = int.from_bytes(self.mm[:8], sys.byteorder)
+        total = self.offset + num_bytes + 20
+        if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
-        buf = self.shm.buf
         with timer("t_write", profile, final=profFinal):
-            buf[self.offset:self.offset+num_bytes] = v
-        self.map[k] = (self.offset, num_bytes)
-        self.offset += num_bytes
+            self.mm[:8] = total.to_bytes(8, sys.byteorder)
+            self.mm[self.offset: self.offset+12] = bytes(k, 'utf-8') +\
+                bytes(12 - len(bytes(k, 'utf-8')))
+            self.mm[self.offset+12: self.offset+20] = num_bytes.to_bytes(8, sys.byteorder)
+            self.mm[self.offset+20: self.offset+20+num_bytes] = v
+        self.sema.release()
 
     def get(self, k, profile=None, profFinal=True):
-        try:
-            tpl = self.map[k]
-        except KeyError:
+        find = False
+        index = 8
+        self.sema.acquire()
+        self.offset = int.from_bytes(self.mm[:8], sys.byteorder)
+        self.sema.release()
+        while index < self.offset:
+            s = self.mm[index:index+12].rstrip(b'\x00').decode("utf-8")
+            index += 20
+            num_bytes = int.from_bytes(self.mm[index-8:index], sys.byteorder)
+            if s == k:
+                find = True
+                break
+            index += num_bytes
+        if not find:
             raise KVKeyError(k)
-        buf = self.shm.buf 
         with timer("t_read", profile, final=profFinal):
-            raw = buf[tpl[0]:tpl[0]+tpl[1]]
+            raw = self.mm[index:index+num_bytes]
         with timer("t_deserialize", profile, final=profFinal):
             if self.serialize:
                 return pickle.loads(raw)
@@ -195,9 +223,87 @@ class Shmm(kv):
         pass
 
     def destroy(self):
-        del self.map
-        self.shm.close()
-        self.shm.unlink()
+        self.mm.close()
+        self.sema.close()
+
+class Shmmap(kv):
+    """ Another way of implementing shared memory. The key difference
+    is to create another shared memory to store map. """
+
+    def __init__(self, serialize=True):
+        """ Both posix_ipc shared memory and semaphore must be previously
+        created. The shared memory for map also needs to be pre-created. 
+        memory view: mm: [val, val, ...]; map: [8 offset, map] 
+        with map {k:[start, len], ...}"""
+        self.serialize = serialize
+        self.offset = 0
+        self.shm = posix_ipc.SharedMemory("share")
+        self.mm = mmap.mmap(self.shm.fd, self.shm.size)
+        self.shm.close_fd()
+        self.sema = posix_ipc.Semaphore("share")
+        self.shmmap = posix_ipc.SharedMemory("map")
+        self.mapmm = mmap.mmap(self.shmmap.fd, self.shmmap.size)
+        self.shmmap.close_fd()
+        self.map = {}
+        # consider: another lock for concurrent writes
+
+    def put(self, k, v, profile=None, profFinal=True):
+        with timer("t_serialize", profile, final=profFinal):
+            if self.serialize:
+                v = pickle.dumps(v)
+        num_bytes = len(v)
+        self.sema.acquire()
+        size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
+        self.map = pickle.loads(self.mapmm[16:16+size])
+        #self.map = json.loads(self.mapmm[16:16+size])
+        if k in self.map.keys():
+            raise ValueError("Cannot modify existing key: "+k)
+        self.offset = int.from_bytes(self.mapmm[:8], sys.byteorder)
+        total = self.offset + num_bytes
+        if total >= self.mm.size():
+            raise ValueError("Not enough shared memory space.")
+        self.map[k] = [self.offset, num_bytes]
+        dic = pickle.dumps(self.map)
+        #dic = json.dumps(self.map).encode('utf-8')
+        size = len(dic)
+        if 16+size > self.mapmm.size():
+            raise ValueError("Not enough map memory space.")
+        with timer("t_write", profile, final=profFinal):
+            self.mapmm[:8] = total.to_bytes(8, sys.byteorder)
+            self.mapmm[8:16] = size.to_bytes(8, sys.byteorder)
+            self.mapmm[16:16+size] = dic
+            self.mm[self.offset: total] = v
+        self.sema.release()
+
+    def get(self, k, profile=None, profFinal=True):
+        if k in self.map.keys():
+            index, num_bytes = self.map[k][0], self.map[k][1]
+        else:
+            self.sema.acquire()
+            size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
+            self.map = pickle.loads(self.mapmm[16:16+size])
+            #self.map = json.loads(self.mapmm[16:16+size])
+            self.sema.release()
+        if k in self.map.keys():
+            index, num_bytes = self.map[k][0], self.map[k][1]
+        else:
+            raise KVKeyError(k)
+        with timer("t_read", profile, final=profFinal):
+            raw = self.mm[index:index+num_bytes]
+        with timer("t_deserialize", profile, final=profFinal):
+            if self.serialize:
+                return pickle.loads(raw)
+            else:
+                return bytes(raw)
+
+    def delete(self, k):
+        """ Not allowed to delete keys. """
+        pass
+
+    def destroy(self):
+        self.mapmm.close()
+        self.mm.close()
+        self.sema.close()
 
 class Local(kv):
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is

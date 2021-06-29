@@ -140,6 +140,8 @@ def main():
         else:
             sys.exit(1)
         
+        if mode != 'sharemem':
+            continue
         print("Running multiproc test (" + mode + "):")
         with ff.testenv('multiproc', mode):
             success = testMultiproc(mode)

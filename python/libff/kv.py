@@ -262,16 +262,16 @@ class Shmmap(kv):
         total = self.offset + num_bytes
         if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
-        self.mapmm[:8] = total.to_bytes(8, sys.byteorder)
         self.map[k] = [self.offset, num_bytes]
         dic = pickle.dumps(self.map)
         #dic = json.dumps(self.map).encode('utf-8')
         size = len(dic)
         if 16+size > self.mapmm.size():
             raise ValueError("Not enough map memory space.")
-        self.mapmm[8:16] = size.to_bytes(8, sys.byteorder)
-        self.mapmm[16:16+size] = dic
         with timer("t_write", profile, final=profFinal):
+            self.mapmm[:8] = total.to_bytes(8, sys.byteorder)
+            self.mapmm[8:16] = size.to_bytes(8, sys.byteorder)
+            self.mapmm[16:16+size] = dic
             self.mm[self.offset: total] = v
         self.sema.release()
 

@@ -10,6 +10,7 @@ import mmap
 import sys
 import json
 from .util import *
+import time
 
 class KVKeyError(Exception):
     def __init__(self, key):
@@ -252,17 +253,30 @@ class Shmmap(kv):
                 v = pickle.dumps(v)
         num_bytes = len(v)
         self.sema.acquire()
-        self.map = json.loads(self.mapmm[8:].rstrip(b'\x00'))   # rstrip might be slow
+        old = time.time()
+        size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
+        self.map = pickle.loads(self.mapmm[16:16+size])
+        #self.map = json.loads(self.mapmm[16:16+size])
+        print(time.time()-old)
         if k in self.map.keys():
-            raise ValueError("key already exists in the memory, please try to get it.")
+            raise ValueError("Cannot modify existing key: "+k)
         self.offset = int.from_bytes(self.mapmm[:8], sys.byteorder)
         total = self.offset + num_bytes
         if total >= self.mm.size():
             raise ValueError("Not enough shared memory space.")
         self.mapmm[:8] = total.to_bytes(8, sys.byteorder)
         self.map[k] = [self.offset, num_bytes]
-        dic = json.dumps(self.map).encode('utf-8')
-        self.mapmm[8:8+len(dic)] = dic
+        old = time.time()
+        dic = pickle.dumps(self.map)
+        #dic = json.dumps(self.map).encode('utf-8')
+        print(time.time()-old)
+        size = len(dic)
+        if 16+size > self.mapmm.size():
+            raise ValueError("Not enough map memory space.")
+        old = time.time()
+        self.mapmm[8:16] = size.to_bytes(8, sys.byteorder)
+        self.mapmm[16:16+size] = dic
+        print(time.time()-old)
         with timer("t_write", profile, final=profFinal):
             self.mm[self.offset: total] = v
         self.sema.release()
@@ -272,7 +286,9 @@ class Shmmap(kv):
             index, num_bytes = self.map[k][0], self.map[k][1]
         else:
             self.sema.acquire()
-            self.map = json.loads(self.mapmm[8:].rstrip(b'\x00'))   # rstrip might be slow
+            size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
+            self.map = pickle.loads(self.mapmm[16:16+size])
+            #self.map = json.loads(self.mapmm[16:16+size])
             self.sema.release()
         if k in self.map.keys():
             index, num_bytes = self.map[k][0], self.map[k][1]

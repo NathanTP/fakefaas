@@ -96,14 +96,15 @@ class kernelSpec():
     @classmethod
     def fromDict(cls, d):
         literals = d.get('literals', [])
+        arguments = d.get('arguments', [])
+        type_list = d.get('type_list', [])
         inputs = d.get('inputs', [])
         temps = d.get('temps', [])
         outputs = d.get('outputs', [])
-
         literals  = [ literalSpec.fromDict(l) for l in literals ]
-        inputs  = [ bufferSpec.fromDict(b) for b in inputs ]
-        temps   = [ bufferSpec.fromDict(b) for b in temps ]
-        outputs = [ bufferSpec.fromDict(b) for b in outputs ]
+        args = []
+        for i in range(len(arguments)):
+            args.append((bufferSpec.fromDict(arguments[i]), type_list[i]))
 
         return cls(d['library'],
                    d['kernel'],
@@ -111,12 +112,10 @@ class kernelSpec():
                    tuple(d['blockDim']),
                    d['sharedSize'],
                    literals,
-                   inputs,
-                   temps,
-                   outputs)
+                   args)
 
 
-    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, literals=[], inputs=[], temps=[], outputs=[]):
+    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, literals=[], arguments=[]):
         self.libPath = pathlib.Path(library).resolve()
         self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
@@ -126,9 +125,21 @@ class kernelSpec():
         self.sharedSize = sharedSize 
 
         self.literals = literals
-        self.inputs = inputs 
-        self.temps = temps 
-        self.outputs = outputs 
+        self.arguments = []
+        self.type_list = []
+        self.inputs = []
+        self.outputs = []
+        self.temps = []
+        for i in range(len(arguments)):
+            arg = arguments[i]
+            self.arguments.append(arg[0])
+            self.type_list.append(arg[1])
+            if 'i' in arg[1]:
+                self.inputs.append(arg[0])
+            if 'o' in arg[1]:
+                self.outputs.append(arg[0])
+            if 't' in arg[1]:
+                self.outputs.append(arg[0])
 
         # Some outputs are also inputs, uniqueOutputs are just the new buffers
         # that have to be created for outputs
@@ -145,8 +156,9 @@ class kernelSpec():
         d['gridDim'] = self.gridDim
         d['blockDim'] = self.blockDim
         d['sharedSize'] = self.sharedSize
-
         d['literals'] = [ l.toDict() for l in self.literals ]
+        d['arguments'] = [ a.toDict() for a in self.arguments ]
+        d['type_list'] = [ i for i in self.type_list ]
         d['inputs'] = [ b.toDict() for b in self.inputs ]
         d['temps'] = [ b.toDict() for b in self.temps ]
         d['outputs'] = [ b.toDict() for b in self.outputs ]

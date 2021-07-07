@@ -52,7 +52,7 @@ __global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vou
 #define TILE_WIDTH 32
 #define TILE_HEIGHT 32
 extern "C"
-__global__ void matmulKern(uint64_t *dims, float* array0, float* array1, float* outArr)
+__global__ void matmulKern(uint64_t *dims, float* outArr, float* array1, float* array0)
 {
     uint64_t rows0 = dims[0];
     uint64_t cols0 = dims[1];

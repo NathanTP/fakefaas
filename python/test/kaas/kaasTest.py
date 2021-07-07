@@ -36,14 +36,14 @@ def testDoublify(mode='direct'):
     libffCtx.kv.put("input", testArray)
 
     # doublify is in-place
-    inputs  = [ kaas.bufferSpec('input', testArray.nbytes) ]
-    outputs = [ kaas.bufferSpec('input', testArray.nbytes) ]
+    arguments = [(kaas.bufferSpec('input', testArray.nbytes), 'io')]
+    
 
-    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+    pather = testPath / 'kerns' / 'libkaasMicro.cubin'
+    kern = kaas.kernelSpec(pather,
             'doublifyKern',
             (1,1), (16,1,1),
-            inputs=inputs,
-            outputs=outputs)
+            arguments=arguments)
 
     req = kaas.kaasReq([ kern ])
 
@@ -92,18 +92,20 @@ def testDotProd(mode='direct'):
     prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
     cBuf = kaas.bufferSpec('c', 8)
 
+    args_prod = [(aBuf, 'i'), (bBuf, 'i'), (prodOutBuf, 'o')]
+
     prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
             'prodKern',
             (1,1), (nElem,1,1),
             literals=[ kaas.literalSpec('Q', nElem) ],
-            inputs=[aBuf, bBuf],
-            outputs=[prodOutBuf])
+            arguments=args_prod)
+
+    args_sum = [(prodOutBuf, 'i'), (cBuf, 'o')]
 
     sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
             'sumKern',
             (1,1), (nElem // 2,1,1),
-            inputs = [prodOutBuf],
-            outputs = [cBuf])
+            arguments=args_sum)
 
     req = kaas.kaasReq([ prodKern, sumKern ])
 
@@ -154,11 +156,12 @@ def testMatMul(mode='direct'):
     blockDim = (threadBlock, threadBlock, 1)
     sharedSize = 2 * blockDim[0] * blockDim[1]
 
+    args = [(dimBuf, 'i'), (cBuf, 'o'), (bBuf, 'i'), (aBuf, 'i')]
+
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
         'matmulKern',
         gridDim, blockDim, sharedSize=sharedSize,
-        inputs = [dimBuf, aBuf, bBuf],
-        outputs = [cBuf])
+        arguments=args)
 
     req = kaas.kaasReq([ kern ])
 
@@ -211,11 +214,12 @@ if __name__ == "__main__":
     print("Double Test:")
     with ff.testenv('simple', mode):
         testDoublify(mode)
-
+    
     print("Dot Product Test:") 
     with ff.testenv('simple', mode):
         testDotProd(mode)
-
+    
     print("MatMul Test")
     with ff.testenv('simple', mode):
         testMatMul(mode)
+    

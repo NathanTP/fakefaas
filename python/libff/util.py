@@ -14,11 +14,12 @@ import pickle
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 redisConf = pathlib.Path(__file__).parent / 'redis.conf'
 
+
 class prof():
     def __init__(self, fromDict=None):
         """A profiler object for a metric or event type. The counter can be
         updated multiple times per event, while calling increment() moves on to
-        a new event.""" 
+        a new event."""
         if fromDict is not None:
             self.total = fromDict['total']
             self.nevent = fromDict['nevent']
@@ -26,11 +27,9 @@ class prof():
             self.total = 0.0
             self.nevent = 0
 
-
     def update(self, n):
         """Update increases the value of this entry for the current event."""
         self.total += n
-
 
     def increment(self, n=0):
         """Finalize the current event (increment the event counter). If n is
@@ -38,11 +37,9 @@ class prof():
         self.update(n)
         self.nevent += 1
 
-
     def total(self):
         """Report the total value of the counter for all events"""
         return self.total
-
 
     def mean(self):
         """Report the average value per event"""
@@ -75,13 +72,12 @@ class profCollection(collections.abc.MutableMapping):
 
     def __iter__(self):
         return iter(self.profs)
-    
+
     def __len__(self):
         return len(self.profs)
 
     def __str__(self):
         return json.dumps(self.report(), indent=4)
-
 
     def mod(self, name):
         if name not in self.mods:
@@ -89,10 +85,9 @@ class profCollection(collections.abc.MutableMapping):
 
         return self.mods[name]
 
-
     def merge(self, new, prefix=''):
         # Start by merging the direct stats
-        for k,v in new.items():
+        for k, v in new.items():
             newKey = prefix+k
             if newKey in self.profs:
                 self.profs[newKey].increment(v.total)
@@ -100,20 +95,19 @@ class profCollection(collections.abc.MutableMapping):
                 self.profs[newKey] = v
 
         # Now recursively handle modules
-        for name,mod in new.mods.items():
-            # Merging into an empty profCollection causes a deep copy 
+        for name, mod in new.mods.items():
+            # Merging into an empty profCollection causes a deep copy
             if name not in self.mods:
                 self.mods[name] = profCollection()
             self.mods[name].merge(mod)
 
     def report(self):
-        flattened = { name : v.mean() for name, v in self.profs.items() }
+        flattened = {name: v.mean() for name, v in self.profs.items()}
 
-        for name,mod in self.mods.items():
-            flattened = {**flattened, **{ name+":"+itemName : v for itemName,v in mod.report().items() }}
+        for name, mod in self.mods.items():
+            flattened = {**flattened, **{name+":"+itemName: v for itemName, v in mod.report().items()}}
 
         return flattened
-
 
     def reset(self):
         """Clears all existing metrics. Any instantiated modules will continue
@@ -124,15 +118,17 @@ class profCollection(collections.abc.MutableMapping):
         for mod in self.mods.values():
             mod.reset()
 
+
 # ms
 timeScale = 1000
+
 
 @contextmanager
 def timer(name, timers, final=True):
     if timers is None:
         yield
     else:
-        start = time.time() * timeScale 
+        start = time.time() * timeScale
         try:
             yield
         finally:
@@ -145,7 +141,7 @@ def timer(name, timers, final=True):
 # XXX These are deprecated in favor of using profCollection but I haven't
 # gotten around to fixing it everywhere
 def mergeTimers(orig, new, prefix):
-    for k,v in new.items():
+    for k, v in new.items():
         newKey = prefix+k
         if newKey in orig:
             orig[newKey].increment(v.total)
@@ -157,7 +153,7 @@ def reportTimers(times):
     if times is None:
         return {}
     else:
-        return { name : v.mean() for name, v in times.items() }
+        return {name: v.mean() for name, v in times.items()}
 
 
 def printTimers(times):
@@ -179,35 +175,33 @@ def testenv(testName, mode):
     up and running and kills it after the test."""
     if mode == 'process':
         redisProc = sp.Popen(['redis-server', str(redisConf)], stdout=sp.PIPE, text=True)
-    
+
     if mode == 'Anna':
         cwd = os.environ['ANNA']
         annaProc = sp.Popen(['./scripts/start-anna-local.sh', 'build'], cwd=cwd)
-    
+
     if mode == 'sharemem':
         # for shmm() class
         memory = posix_ipc.SharedMemory("share", posix_ipc.O_CREX, size=10000000000)
-        sema = posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
+        posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
         mapfile = mmap.mmap(memory.fd, memory.size)
         memory.close_fd()
         offset = 8
         mapfile[:8] = offset.to_bytes(8, sys.byteorder)
         mapfile.close()
-        
+
     if mode == 'sharememap':
         # for shmmap() class
         memory = posix_ipc.SharedMemory("share", posix_ipc.O_CREX, size=10000000000)
-        sema = posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
+        posix_ipc.Semaphore("share", posix_ipc.O_CREX, initial_value=1)
         mapmem = posix_ipc.SharedMemory("map", posix_ipc.O_CREX, size=100000000)
         mapmm = mmap.mmap(mapmem.fd, mapmem.size)
         mapmem.close_fd()
         offset = 0
         mapmm[:8] = offset.to_bytes(8, sys.byteorder)
         size = 5
-        #size = 2
         mapmm[8:16] = size.to_bytes(8, sys.byteorder)
         mapmm[16:21] = pickle.dumps({})
-        #mapmm[16:18] = b'{}'
         mapmm.close()
 
     try:
@@ -221,14 +215,13 @@ def testenv(testName, mode):
     finally:
         if mode == 'Anna':
             annaProc.terminate()
-            annaTerm = sp.Popen(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd=cwd)
-            #annaTerm.wait(timeout=30)
-        
+            sp.run(['./scripts/stop-anna-local.sh', 'remove-logs'], cwd=cwd)
+
         if mode == 'sharemem':
             # for shmm() class
             posix_ipc.unlink_shared_memory("share")
             posix_ipc.unlink_semaphore("share")
-        
+
         if mode == 'sharememap':
             # for shmmap() class
             posix_ipc.unlink_shared_memory("share")
@@ -238,5 +231,5 @@ def testenv(testName, mode):
         if mode == 'process':
             redisProc.terminate()
             # It takes a while for redis to release the port after exiting
-        
+
         time.sleep(0.5)

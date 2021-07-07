@@ -11,7 +11,7 @@ import time
 import copy
 
 from . import array
-from . import kv 
+from . import kv
 from . import util
 
 try:
@@ -43,14 +43,14 @@ class RemoteFunc(abc.ABC):
         any internal statistics. The object will be modified in-place (no
         copies are made). However, to ensure all updates are finalized, users
         must call getStats().
-        
+
         clientID identifies a unique tennant in the system. Functions from
         different clients will get independent executors while functions from
         the same client may or may not get a different executor on each call.
         ClientID -1 is reserved for system services like KaaS and may be
         treated differently."""
         pass
-    
+
 
     @abc.abstractmethod
     def Invoke(self, arg):
@@ -87,10 +87,10 @@ class RemoteCtx():
     def __init__(self, arrayStore, kvStore):
         self.array = arrayStore
         self.kv = kvStore
-        
+
         # These are managed by the remote func objects
         self.cudaDev = None
-        self.stats = util.profCollection() 
+        self.stats = util.profCollection()
 
         # Can be used by the function to store intermediate ephemeral state
         # (not guaranteed to persist between calls)
@@ -117,7 +117,7 @@ class DirectRemoteFuncFuture():
 class DirectRemoteFunc(RemoteFunc):
     """Invokes the function directly in the callers process. This will import
     the function's package.
-    
+
     The package must implement a function named "LibffInvokeRegister" that
     returns a mapping of function name -> function object. This is similar to
     the 'funcs' argument to RemoteProcessServer."""
@@ -140,7 +140,7 @@ class DirectRemoteFunc(RemoteFunc):
         if stats is None:
             self.stats = util.profCollection()
         else:
-            self.stats = stats 
+            self.stats = stats
 
         if cudaAvailable and enableGpu:
             if len(cudaFreeDevs) == 0:
@@ -178,7 +178,7 @@ class DirectRemoteFunc(RemoteFunc):
                     package = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(package)
                     self.funcs = package.LibffInvokeRegister()
-                    _importedFuncPackages[self.packagePath] = self.funcs 
+                    _importedFuncPackages[self.packagePath] = self.funcs
 
         with util.timer('t_invoke', self.stats):
             if self.fName not in self.funcs:
@@ -197,7 +197,7 @@ class DirectRemoteFunc(RemoteFunc):
 
 
     def Close(self):
-        if self.ctx.cudaDev is not None: 
+        if self.ctx.cudaDev is not None:
             cudaFreeDevs.append(self.ctx.cudaDev)
 
 
@@ -284,7 +284,9 @@ class _processExecutor():
                 return False
 
             if readyMsg != "READY\n":
-                raise InvocationError("Executor failed to initialize: "+readyMsg)
+                self.proc.terminate()
+                output = self.proc.stdout.read()
+                raise InvocationError("Executor failed to initialize: " + output)
 
             self.ready = True
             return True
@@ -321,7 +323,7 @@ class _processExecutor():
                 return None
             else:
                 self.lastResp += 1
-                self.resps[self.lastResp] = resp 
+                self.resps[self.lastResp] = resp
 
         with util.timer('t_responseDecode', stats):
             try:
@@ -346,7 +348,7 @@ class _processExecutor():
     def kill(self, force=False):
         """Wait for all outstanding work to complete, then kill the worker.
         Users can still call recv on this object, but they can no longer send.
-         
+
         This operation is synchronous in order to ensure that all resources are
         indeed freed."""
         self._setBlock(True)
@@ -392,7 +394,7 @@ class _processPool():
                 executor = _processExecutor(packagePath, clientID, arrayMnt=arrayMnt, enableGpu=enableGpu)
                 self.execs.append(executor)
 
-        return executor 
+        return executor
 
     def destroy(self):
         for ex in self.execs:
@@ -412,7 +414,7 @@ class ProcessRemoteFuncFuture():
         with util.timer('t_futureWait', self.stats):
             resp = self.proc.recv(self.reqID, self.funcID, stats=self.stats, block=block)
         return resp
-    
+
 
 def DestroyFuncs():
     """Creating a RemoteFunction may introduce global state, this function
@@ -435,7 +437,7 @@ class ProcessRemoteFunc(RemoteFunc):
         _processFuncNextID += 1
 
         # ID of the next request to make and the last completed request (respectively)
-        self.nextID = 0 
+        self.nextID = 0
         self.lastCompleted = -1
         # Maps completed request IDs to their responses, responses are removed once _awaitResp is called
         self.completedReqs = {}
@@ -464,7 +466,7 @@ class ProcessRemoteFunc(RemoteFunc):
         with util.timer('t_invoke', self.stats):
             fut = self.InvokeAsync(arg)
             resp = fut.get()
-        return resp 
+        return resp
 
 
     def getStats(self):
@@ -478,7 +480,7 @@ class ProcessRemoteFunc(RemoteFunc):
                 'command' : 'reportStats',
                 # We always reset the worker since we now have those stats in
                 # our local stats and don't want to count them twice
-                'reset' : True 
+                'reset' : True
         }
         msgID = proc.send(statsReq, self.funcID)
         workerStats = proc.recv(msgID, self.funcID)
@@ -494,7 +496,7 @@ class ProcessRemoteFunc(RemoteFunc):
         # getStats resets everything on the client
         self.getStats()
         self.stats.reset()
-        
+
 
     def Close(self):
         # State is global now, so there's nothing to clean, might even remove
@@ -511,7 +513,7 @@ def RemoteProcessServer(funcs, serverArgs):
     process). This function will return when the client is done with you
     (closes stdin). Server args are generally provided by libff.invoke on the
     command line (you should usually pass sys.argv).
-    
+
     funcs is a dictionary mapping cannonical function names (what a remote
     invoker would call) to the actual python function object"""
 
@@ -551,7 +553,7 @@ def RemoteProcessServer(funcs, serverArgs):
                 if req['funcID'] not in stats:
                     stats[req['funcID']] = util.profCollection()
                 ctx.profs = stats[req['funcID']]
-                ctx.cudaDev = args.gpu 
+                ctx.cudaDev = args.gpu
                 if req['fName'] in funcs:
                     resp = funcs[req['fName']](req['fArg'], ctx)
                 else:

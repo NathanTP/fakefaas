@@ -1,6 +1,5 @@
 import pathlib
 import math
-from pprint import pprint
 import sys
 import subprocess as sp
 
@@ -8,8 +7,9 @@ import libff as ff
 import libff.kv
 import libff.invoke
 
-# import kaasServer as kaas
 import libff.kaas as kaas
+import libff.kaas.kaasFF
+
 import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
@@ -28,7 +28,7 @@ def getCtx(remote=False):
 def testDoublify(mode='direct'):
     stats = ff.util.profCollection()
     libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.getHandle(mode, libffCtx, stats=stats)
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx, stats=stats)
 
     testArray = np.random.randn(16).astype(np.float32)
     origArray = testArray.copy()
@@ -36,16 +36,16 @@ def testDoublify(mode='direct'):
     libffCtx.kv.put("input", testArray)
 
     # doublify is in-place
-    inputs  = [ kaas.bufferSpec('input', testArray.nbytes) ]
-    outputs = [ kaas.bufferSpec('input', testArray.nbytes) ]
+    inputs = [kaas.bufferSpec('input', testArray.nbytes)]
+    outputs = [kaas.bufferSpec('input', testArray.nbytes)]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
-            'doublifyKern',
-            (1,1), (16,1,1),
-            inputs=inputs,
-            outputs=outputs)
+                           'doublifyKern',
+                           (1, 1), (16, 1, 1),
+                           inputs=inputs,
+                           outputs=outputs)
 
-    req = kaas.kaasReq([ kern ])
+    req = kaas.kaasReq([kern])
 
     # This is just for the test, a real system would use libff to invoke the
     # kaas server
@@ -54,7 +54,7 @@ def testDoublify(mode='direct'):
     doubledBytes = libffCtx.kv.get('input')
     doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
 
-    libffCtx.kv.delete("input") 
+    libffCtx.kv.delete("input")
 
     expect = origArray*2
     if not np.array_equal(doubledArray, expect):
@@ -72,20 +72,20 @@ def testDoublify(mode='direct'):
 
 def testDotProd(mode='direct'):
     nElem = 1024
-    # nElem = 32 
+    # nElem = 32
     nByte = nElem*4
 
     libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.getHandle(mode, libffCtx)
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
 
-    aArr = np.arange(0,nElem, dtype=np.uint32)
-    bArr = np.arange(nElem,nElem*2, dtype=np.uint32)
+    aArr = np.arange(0, nElem, dtype=np.uint32)
+    bArr = np.arange(nElem, nElem*2, dtype=np.uint32)
     # arrLen = np.uint64(nElem)
 
     libffCtx.kv.put('a',   aArr)
     libffCtx.kv.put('b',   bArr)
     # libffCtx.kv.put('len', arrLen)
-    
+
     aBuf = kaas.bufferSpec('a', nByte)
     bBuf = kaas.bufferSpec('b', nByte)
     # lenBuf = kaas.bufferSpec('len', arrLen.nbytes)
@@ -93,19 +93,19 @@ def testDotProd(mode='direct'):
     cBuf = kaas.bufferSpec('c', 8)
 
     prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
-            'prodKern',
-            (1,1), (nElem,1,1),
-            literals=[ kaas.literalSpec('Q', nElem) ],
-            inputs=[aBuf, bBuf],
-            outputs=[prodOutBuf])
+                               'prodKern',
+                               (1, 1), (nElem, 1, 1),
+                               literals=[kaas.literalSpec('Q', nElem)],
+                               inputs=[aBuf, bBuf],
+                               outputs=[prodOutBuf])
 
     sumKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
-            'sumKern',
-            (1,1), (nElem // 2,1,1),
-            inputs = [prodOutBuf],
-            outputs = [cBuf])
+                              'sumKern',
+                              (1, 1), (nElem // 2, 1, 1),
+                              inputs=[prodOutBuf],
+                              outputs=[cBuf])
 
-    req = kaas.kaasReq([ prodKern, sumKern ])
+    req = kaas.kaasReq([prodKern, sumKern])
 
     kaasHandle.Invoke(req.toDict())
 
@@ -126,15 +126,18 @@ def testDotProd(mode='direct'):
 
 
 rng = np.random.default_rng()
+
+
 def generateArr(shape):
     return rng.random(shape, dtype=np.float32)
 
+
 def testMatMul(mode='direct'):
     libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.getHandle(mode, libffCtx)
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
 
-    arrA = generateArr((32,32))
-    arrB = generateArr((32,32))
+    arrA = generateArr((32, 32))
+    arrB = generateArr((32, 32))
     dims = np.asarray(list(arrA.shape) + list(arrB.shape), dtype=np.uint64)
 
     libffCtx.kv.put('dims', dims)
@@ -155,12 +158,12 @@ def testMatMul(mode='direct'):
     sharedSize = 2 * blockDim[0] * blockDim[1]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
-        'matmulKern',
-        gridDim, blockDim, sharedSize=sharedSize,
-        inputs = [dimBuf, aBuf, bBuf],
-        outputs = [cBuf])
+                           'matmulKern',
+                           gridDim, blockDim, sharedSize=sharedSize,
+                           inputs=[dimBuf, aBuf, bBuf],
+                           outputs=[cBuf])
 
-    req = kaas.kaasReq([ kern ])
+    req = kaas.kaasReq([kern])
 
     kaasHandle.Invoke(req.toDict())
 
@@ -180,7 +183,7 @@ def testMatMul(mode='direct'):
     dist = np.linalg.norm(cArr - npArr)
     if dist > 10:
         print("FAIL:")
-        print("Distance: ",dist)
+        print("Distance: ", dist)
         print("A:\n", arrA)
         print("B:\n", arrB)
         print("KaaS Result:")
@@ -191,6 +194,7 @@ def testMatMul(mode='direct'):
         print(npArr)
     else:
         print("PASS")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -212,7 +216,7 @@ if __name__ == "__main__":
     with ff.testenv('simple', mode):
         testDoublify(mode)
 
-    print("Dot Product Test:") 
+    print("Dot Product Test:")
     with ff.testenv('simple', mode):
         testDotProd(mode)
 

@@ -4,23 +4,14 @@
 # intranode). Eventually it will be its own service because scheduling
 # decisions will be different.
 
-import sys
 import pathlib
-import collections
-from pprint import pprint
-
-import libff as ff
-import libff.invoke
-
 
 serverPackage = pathlib.Path(__file__).resolve().parent
 
-from ._server import *
 
 class KaasError(Exception):
     def __init__(self, cause):
         self.cause = cause
-
 
     def __str__(self):
         return self.cause
@@ -32,10 +23,9 @@ class bufferSpec():
     @classmethod
     def fromDict(cls, d):
         return cls(d['name'],
-            d['size'],
-            d.get('ephemeral', False),
-            d.get('const', False))
-
+                   d['size'],
+                   d.get('ephemeral', False),
+                   d.get('const', False))
 
     def __init__(self, name, size, ephemeral=False, const=False):
         # Key to use in the kv store
@@ -55,15 +45,13 @@ class bufferSpec():
         # non-const buffers will get reloaded on every invocation.
         self.const = const
 
-
     def toDict(self):
         return {
-                'name' : self.name,
-                'size' : self.size,
-                'ephemeral' : self.ephemeral,
-                'const' : self.const
+                'name': self.name,
+                'size': self.size,
+                'ephemeral': self.ephemeral,
+                'const': self.const
             }
-
 
     def __eq__(self, other):
         if not isinstance(other, bufferSpec):
@@ -88,7 +76,7 @@ class literalSpec():
         self.val = val
 
     def toDict(self):
-        return { "type" : self.t, "val" : self.val }
+        return {"type": self.t, "val": self.val}
 
 
 class kernelSpec():
@@ -100,10 +88,10 @@ class kernelSpec():
         temps = d.get('temps', [])
         outputs = d.get('outputs', [])
 
-        literals  = [ literalSpec.fromDict(l) for l in literals ]
-        inputs  = [ bufferSpec.fromDict(b) for b in inputs ]
-        temps   = [ bufferSpec.fromDict(b) for b in temps ]
-        outputs = [ bufferSpec.fromDict(b) for b in outputs ]
+        literals = [literalSpec.fromDict(lit) for lit in literals]
+        inputs = [bufferSpec.fromDict(b) for b in inputs]
+        temps = [bufferSpec.fromDict(b) for b in temps]
+        outputs = [bufferSpec.fromDict(b) for b in outputs]
 
         return cls(d['library'],
                    d['kernel'],
@@ -115,20 +103,20 @@ class kernelSpec():
                    temps,
                    outputs)
 
-
-    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0, literals=[], inputs=[], temps=[], outputs=[]):
+    def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0,
+                 literals=[], inputs=[], temps=[], outputs=[]):
         self.libPath = pathlib.Path(library).resolve()
         self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
-        
+
         self.gridDim = gridDim
         self.blockDim = blockDim
-        self.sharedSize = sharedSize 
+        self.sharedSize = sharedSize
 
         self.literals = literals
-        self.inputs = inputs 
-        self.temps = temps 
-        self.outputs = outputs 
+        self.inputs = inputs
+        self.temps = temps
+        self.outputs = outputs
 
         # Some outputs are also inputs, uniqueOutputs are just the new buffers
         # that have to be created for outputs
@@ -136,7 +124,6 @@ class kernelSpec():
         for o in self.outputs:
             if o not in self.inputs:
                 self.uniqueOutputs.append(o)
-
 
     def toDict(self):
         d = {}
@@ -146,12 +133,11 @@ class kernelSpec():
         d['blockDim'] = self.blockDim
         d['sharedSize'] = self.sharedSize
 
-        d['literals'] = [ l.toDict() for l in self.literals ]
-        d['inputs'] = [ b.toDict() for b in self.inputs ]
-        d['temps'] = [ b.toDict() for b in self.temps ]
-        d['outputs'] = [ b.toDict() for b in self.outputs ]
+        d['literals'] = [lit.toDict() for lit in self.literals]
+        d['inputs'] = [b.toDict() for b in self.inputs]
+        d['temps'] = [b.toDict() for b in self.temps]
+        d['outputs'] = [b.toDict() for b in self.outputs]
         return d
-
 
     def __eq__(self, other):
         return self.name == other.name
@@ -160,41 +146,12 @@ class kernelSpec():
 class kaasReq():
     @classmethod
     def fromDict(cls, d):
-        kernels = [ kernelSpec.fromDict(ks) for ks in d['kernels'] ]
+        kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
         return cls(kernels)
-
 
     def __init__(self, kernels):
         """Turn a list of kernelSpecs into a kaas Request"""
         self.kernels = kernels
 
-
     def toDict(self):
-        return {
-                "kernels" : [ k.toDict() for k in self.kernels ]
-               }
-
-
-def getHandle(mode, ctx, stats=None):
-    """Returns a libff RemoteFunc object representing the KaaS service"""
-    if mode == 'direct':
-        # return libff.invoke.DirectRemoteFunc(serverPackage, 'invoke', ctx, clientID=-1, stats=stats)
-        return libff.invoke.DirectRemoteFunc('libff.kaas', 'invoke', ctx, clientID=-1, stats=stats)
-    elif mode == 'process':
-        # return libff.invoke.ProcessRemoteFunc(serverPackage, 'invoke', ctx, clientID=-1, stats=stats)
-        return libff.invoke.ProcessRemoteFunc('libff.kaas', 'invoke', ctx, clientID=-1, stats=stats)
-    else:
-        raise KaasError("Unrecognized execution mode: " + str(mode))
-
-
-def kaasServe(req, ctx):
-    # Convert the dictionary req into a kaasReq object
-    kReq = kaasReq.fromDict(req)
-
-    kaasServeInternal(kReq, ctx)
-
-
-def LibffInvokeRegister():
-    """Callback required by libff.invoke in DirectRemoteFunc mode"""
-
-    return { "invoke" : kaasServe }
+        return {"kernels": [k.toDict() for k in self.kernels]}

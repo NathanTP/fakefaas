@@ -13,9 +13,7 @@ saved back to the KV store.
     {
         "library" : # Absolute path to the CUDA wrapper shared library,
         "kernel"  : # name of the wrapper func in library to call,
-        "inputs"  : [ # list of input buffersSpecs to use ],
-        "temps"   : [ # list of temporary buffersSpecs to use ],
-        "outputs" : [ # list of output buffersSpecs to use ],
+        "arguments": [ # list of tuples, first value is bufferSpec to use, second value is string denoting type (i -> input, o -> output, t -> temporary ]
         "nGrid"   : # Number of CUDA grids to use when invoking,
         "nBlock"  : # Number of CUDA blocks to use when invoking 
     }

@@ -119,13 +119,13 @@ class kernelSpec():
         self.libPath = pathlib.Path(library).resolve()
         self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
-        
+
         self.gridDim = gridDim
         self.blockDim = blockDim
-        self.sharedSize = sharedSize 
+        self.sharedSize = sharedSize
 
         self.literals = literals
-        self.arguments = arguments
+        self.arguments = []
         self.type_list = []
         self.inputs = []
         self.outputs = []

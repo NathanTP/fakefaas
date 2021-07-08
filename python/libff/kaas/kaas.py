@@ -125,7 +125,7 @@ class kernelSpec():
         self.sharedSize = sharedSize 
 
         self.literals = literals
-        self.arguments = []
+        self.arguments = arguments
         self.type_list = []
         self.inputs = []
         self.outputs = []
@@ -139,7 +139,7 @@ class kernelSpec():
             if 'o' in arg[1]:
                 self.outputs.append(arg[0])
             if 't' in arg[1]:
-                self.outputs.append(arg[0])
+                self.temps.append(arg[0])
 
         # Some outputs are also inputs, uniqueOutputs are just the new buffers
         # that have to be created for outputs

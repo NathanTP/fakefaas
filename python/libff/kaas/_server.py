@@ -464,9 +464,6 @@ def kaasServeInternal(req, ctx):
 
         # The user should ensure that all buffers will fit on the device.
         # Invoke() will catch the mistake if they don't.
-        #inputs = [ bCache.load(b) for b in kSpec.inputs ]
-        #temps = [ bCache.load(b) for b in kSpec.temps ]
-        #outputs = [ bCache.load(b, overwrite=True) for b in kSpec.uniqueOutputs ]
         arguments = []
         for i in range(len(kSpec.arguments)):       
             if kSpec.type_list[i] == 'o':

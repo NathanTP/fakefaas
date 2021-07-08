@@ -14,22 +14,19 @@ def testDoublify():
     testArray = np.random.randn(16).astype(np.float32)
     origArray = testArray.copy()
 
-    inputs = {}
     inpRef = ray.put(testArray.data)
 
     # doublify is in-place
-    inputs = [kaas.bufferSpec(inpRef, testArray.nbytes)]
     # XXX kaas currently conflates GPU buffers and KV objects. This means you
     # can't have an in-place kernel that writes the output to a new key. Gotta
     # fix this, but this works around it for now since Ray ignores the output
     # key but KaaS uses it to identify the buffer.
-    outputs = [kaas.bufferSpec(inpRef, testArray.nbytes)]
+    arguments = [(kaas.bufferSpec(inpRef, testArray.nbytes), 'io')]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
                            'doublifyKern',
                            (1, 1), (16, 1, 1),
-                           inputs=inputs,
-                           outputs=outputs)
+                           arguments=arguments)
 
     req = kaas.kaasReq([kern])
 

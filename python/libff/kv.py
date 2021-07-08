@@ -1,6 +1,4 @@
 import redis
-#import anna.client
-#import anna.lattices
 import time
 import pickle
 import abc
@@ -8,9 +6,14 @@ import copy
 import posix_ipc
 import mmap
 import sys
-import json
-from .util import *
-import time
+from .util import timer
+
+try:
+    import anna
+    annaAvailable = True
+except ImportError:
+    annaAvailable = False
+
 
 class KVKeyError(Exception):
     def __init__(self, key):
@@ -18,34 +21,32 @@ class KVKeyError(Exception):
 
     def __str__(self):
         return "Key " + str(self.key) + " does not exist"
-    
+
 
 class kv(abc.ABC):
     """A bare-bones key-value store abstraction."""
 
     @abc.abstractmethod
-    def put(self, k: str, v):
+    def put(self, k: str, v, profile=None, profFinal=True):
         """Place v in the store at key k. If serialize is set, v can be any
         serializable python type (will be serialized to bytes before
         storing)."""
         pass
 
     @abc.abstractmethod
-    def get(self, k: str):
+    def get(self, k: str, profile=None, profFinal=True):
         """Retrieve the value at key k. If deserialize is set, the value will
         be deserialized to a native python object before returning, otherwise
         bytes will be returned. Raises KVKeyError if the key does not exist."""
         pass
 
-
     @abc.abstractmethod
-    def delete(self, *keys):
+    def delete(self, *keys, profile=None, profFinal=True):
         """Remove key(s) k from the store. This is more of a hint than a
         guarantee, k may or may not really be removed, but you shouldn't refer
         to it after. It is safe to delete a non-existent (or already deleted)
         key."""
         pass
-
 
     @abc.abstractmethod
     def destroy(self):
@@ -64,7 +65,6 @@ class Redis(kv):
         self.handle = redis.Redis(password=pwd)
         self.serialize = serialize
 
-
     def put(self, k, v, profile=None, profFinal=True):
         with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
@@ -72,7 +72,6 @@ class Redis(kv):
 
         with timer("t_write", profile, final=profFinal):
             self.handle.set(k, v)
-
 
     def get(self, k, profile=None, profFinal=True):
         with timer("t_read", profile, final=profFinal):
@@ -87,21 +86,20 @@ class Redis(kv):
             else:
                 return raw
 
-
     def delete(self, *keys, profile=None, profFinal=True):
         with timer("t_delete", profile, final=profFinal):
-            ret = self.handle.delete(*keys)
-
+            self.handle.delete(*keys)
 
     def destroy(self):
         self.handle.client_kill_filter(_id=self.handle.client_id())
+
 
 class Anna(kv):
     """A thin wrapper over a subset of anna functionality. Anna is assumed to
        be running locally on the default port."""
     def __init__(self, elb_addr, ip, local=False, offset=0, serialize=True):
         '''
-        The AnnaClient allows you to interact with a local 
+        The AnnaClient allows you to interact with a local
         copy of Anna or with a remote cluster running on AWS.
         elb_addr: Either 127.0.0.1 (local mode) or the address of an AWS ELB
         for the routing tier
@@ -115,12 +113,10 @@ class Anna(kv):
         '''
         self.handle = anna.client.AnnaTcpClient(elb_addr, ip, local, offset)
         self.serialize = serialize
-    
 
     def get_time(self):
         """ Helper function to get the current time in microseconds. """
         return round(time.time() * 10**6)
-
 
     def put(self, k, v, profile=None, profFinal=True):
         with timer("t_serialize", profile, final=profFinal):
@@ -131,7 +127,6 @@ class Anna(kv):
 
         with timer("t_write", profile, final=profFinal):
             self.handle.put(k, val)
-
 
     def get(self, k, profile=None, profFinal=True):
         with timer("t_read", profile, final=profFinal):
@@ -146,13 +141,12 @@ class Anna(kv):
             else:
                 return raw
 
-
     def delete(self, *keys, profile=None, profFinal=True):
         pass
 
-
     def destroy(self):
         pass
+
 
 class Shmm(kv):
     """ A local-like kv store. With python posix_ipc package.
@@ -164,7 +158,7 @@ class Shmm(kv):
         [8 offset, 12 key, 8 size, val, 12 key, 8 size, val, ...]"""
         self.serialize = serialize
         self.offset = 8
-        #self.map = {} or, we can serialize it and put it in the shmm
+        # self.map = {} or, we can serialize it and put it in the shmm
         # key: name; value: (offset, number of bytes)
         self.shm = posix_ipc.SharedMemory("share")
         self.mm = mmap.mmap(self.shm.fd, self.shm.size)
@@ -172,8 +166,6 @@ class Shmm(kv):
         self.sema = posix_ipc.Semaphore("share")
 
     def put(self, k, v, profile=None, profFinal=True):
-        #if k in self.map.keys():
-        #    raise ValueError("Duplicate key")
         # detection is not implemented
         if len(k) > 12:
             raise ValueError("length of key exceeds 12, please try a smaller length.")
@@ -226,14 +218,15 @@ class Shmm(kv):
         self.mm.close()
         self.sema.close()
 
+
 class Shmmap(kv):
     """ Another way of implementing shared memory. The key difference
     is to create another shared memory to store map. """
 
     def __init__(self, serialize=True):
         """ Both posix_ipc shared memory and semaphore must be previously
-        created. The shared memory for map also needs to be pre-created. 
-        memory view: mm: [val, val, ...]; map: [8 offset, map] 
+        created. The shared memory for map also needs to be pre-created.
+        memory view: mm: [val, val, ...]; map: [8 offset, map]
         with map {k:[start, len], ...}"""
         self.serialize = serialize
         self.offset = 0
@@ -255,7 +248,6 @@ class Shmmap(kv):
         self.sema.acquire()
         size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
         self.map = pickle.loads(self.mapmm[16:16+size])
-        #self.map = json.loads(self.mapmm[16:16+size])
         if k in self.map.keys():
             raise ValueError("Cannot modify existing key: "+k)
         self.offset = int.from_bytes(self.mapmm[:8], sys.byteorder)
@@ -264,7 +256,6 @@ class Shmmap(kv):
             raise ValueError("Not enough shared memory space.")
         self.map[k] = [self.offset, num_bytes]
         dic = pickle.dumps(self.map)
-        #dic = json.dumps(self.map).encode('utf-8')
         size = len(dic)
         if 16+size > self.mapmm.size():
             raise ValueError("Not enough map memory space.")
@@ -282,7 +273,6 @@ class Shmmap(kv):
             self.sema.acquire()
             size = int.from_bytes(self.mapmm[8:16], sys.byteorder)
             self.map = pickle.loads(self.mapmm[16:16+size])
-            #self.map = json.loads(self.mapmm[16:16+size])
             self.sema.release()
         if k in self.map.keys():
             index, num_bytes = self.map[k][0], self.map[k][1]
@@ -305,10 +295,11 @@ class Shmmap(kv):
         self.mm.close()
         self.sema.close()
 
+
 class Local(kv):
     """A baseline "local" kv store. Really just a dictionary. Note: no copy is
     made, be careful not to re-use the reference."""
-    
+
     def __init__(self, copyObjs=False, serialize=True):
         """If copyObjs is set, all puts and gets will make deep copies of the
         object, otherwise the existing objects will be stored. If
@@ -317,19 +308,17 @@ class Local(kv):
         store better."""
         self.store = {}
         self.copy = copyObjs
-        self.serialize = serialize 
-
+        self.serialize = serialize
 
     def put(self, k, v, profile=None, profFinal=True):
         with timer("t_serialize", profile, final=profFinal):
             if self.serialize:
-                 v = pickle.dumps(v)
+                v = pickle.dumps(v)
             elif self.copy:
-                 v = copy.deepcopy(v)
+                v = copy.deepcopy(v)
 
         with timer("t_write", profile, final=profFinal):
             self.store[k] = v
-
 
     def get(self, k, profile=None, profFinal=True):
         with timer("t_read", profile, final=profFinal):
@@ -346,7 +335,6 @@ class Local(kv):
             else:
                 return raw
 
-
     def delete(self, *keys, profile=None, profFinal=True):
         with timer("t_delete", profile, final=profFinal):
             for k in keys:
@@ -354,7 +342,6 @@ class Local(kv):
                     del self.store[k]
                 except KeyError:
                     pass
-
 
     def destroy(self):
         pass

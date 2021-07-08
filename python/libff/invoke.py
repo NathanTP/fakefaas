@@ -11,15 +11,15 @@ import time
 import copy
 
 from . import array
-from . import kv 
+from . import kv
 from . import util
 
 try:
     import pycuda.driver as cuda
-    import pycuda.autoinit
+    import pycuda.autoinit  # NOQA
     cudaAvailable = True
     cudaNDev = cuda.Device.count()
-    cudaFreeDevs = [ i for i in range(cudaNDev) ]
+    cudaFreeDevs = [i for i in range(cudaNDev)]
 except ImportError:
     cudaAvailable = False
 
@@ -43,21 +43,19 @@ class RemoteFunc(abc.ABC):
         any internal statistics. The object will be modified in-place (no
         copies are made). However, to ensure all updates are finalized, users
         must call getStats().
-        
+
         clientID identifies a unique tennant in the system. Functions from
         different clients will get independent executors while functions from
         the same client may or may not get a different executor on each call.
         ClientID -1 is reserved for system services like KaaS and may be
         treated differently."""
         pass
-    
 
     @abc.abstractmethod
     def Invoke(self, arg):
         """Invoke the function with the dictionary-typed argument arg. Will
         return the response dictionary from the function."""
         pass
-
 
     @abc.abstractmethod
     def getStats(self):
@@ -67,13 +65,11 @@ class RemoteFunc(abc.ABC):
         idempotent"""
         pass
 
-
     @abc.abstractmethod
     def resetStats(self):
         """Reset any internally managed stats, including the stats object
         passed at initialization"""
         pass
-
 
     @abc.abstractmethod
     def Close(self):
@@ -87,10 +83,10 @@ class RemoteCtx():
     def __init__(self, arrayStore, kvStore):
         self.array = arrayStore
         self.kv = kvStore
-        
+
         # These are managed by the remote func objects
         self.cudaDev = None
-        self.stats = util.profCollection() 
+        self.stats = util.profCollection()
 
         # Can be used by the function to store intermediate ephemeral state
         # (not guaranteed to persist between calls)
@@ -102,6 +98,7 @@ class RemoteCtx():
 # registration be idempotent). You still need a DirectRemoteFunc object per
 # function, but the heavy state is memoized here.
 _importedFuncPackages = {}
+
 
 # For now we just do delayed execution instead of asynchronous because I don't
 # want to deal with multiprocessing or dask or something.
@@ -117,7 +114,7 @@ class DirectRemoteFuncFuture():
 class DirectRemoteFunc(RemoteFunc):
     """Invokes the function directly in the callers process. This will import
     the function's package.
-    
+
     The package must implement a function named "LibffInvokeRegister" that
     returns a mapping of function name -> function object. This is similar to
     the 'funcs' argument to RemoteProcessServer."""
@@ -140,7 +137,7 @@ class DirectRemoteFunc(RemoteFunc):
         if stats is None:
             self.stats = util.profCollection()
         else:
-            self.stats = stats 
+            self.stats = stats
 
         if cudaAvailable and enableGpu:
             if len(cudaFreeDevs) == 0:
@@ -151,11 +148,9 @@ class DirectRemoteFunc(RemoteFunc):
         # cold starts.
         self.initialized = False
 
-
     # Not actually async, just delays execution until you ask for it
     def InvokeAsync(self, arg):
         return DirectRemoteFuncFuture(arg, self)
-
 
     def Invoke(self, arg):
         if not self.initialized:
@@ -178,7 +173,7 @@ class DirectRemoteFunc(RemoteFunc):
                     package = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(package)
                     self.funcs = package.LibffInvokeRegister()
-                    _importedFuncPackages[self.packagePath] = self.funcs 
+                    _importedFuncPackages[self.packagePath] = self.funcs
 
         with util.timer('t_invoke', self.stats):
             if self.fName not in self.funcs:
@@ -187,17 +182,14 @@ class DirectRemoteFunc(RemoteFunc):
             self.ctx.profs = self.stats.mod('worker')
             return self.funcs[self.fName](arg, self.ctx)
 
-
     def getStats(self):
         return self.stats
-
 
     def resetStats(self):
         self.stats.reset()
 
-
     def Close(self):
-        if self.ctx.cudaDev is not None: 
+        if self.ctx.cudaDev is not None:
             cudaFreeDevs.append(self.ctx.cudaDev)
 
 
@@ -230,7 +222,7 @@ class _processExecutor():
         # Latest Id we have a response for. For now we assume everything is in
         # order wrt a single executor.
         self.lastResp = -1
-        self.resps = {} # reqID -> raw message
+        self.resps = {}  # reqID -> raw message
 
         # Python's package management is garbage, if the worker is
         # a module, you have to run it with -m, but if it's a
@@ -256,14 +248,12 @@ class _processExecutor():
         self.ready = False
         self.blocking = True
 
-
     def _setBlock(self, block):
         if self.blocking == block:
             return
         else:
             os.set_blocking(self.proc.stdout.fileno(), block)
             self.blocking = block
-
 
     def waitReady(self, stats=None, block=True):
         """Optional block until the function is ready. This is mostly just
@@ -273,7 +263,7 @@ class _processExecutor():
         block==False)"""
 
         self._setBlock(block)
-        if self.ready == False:
+        if self.ready is False:
             # t_init really only measures from the time you wait for it, not
             # the true init time (hard to measure that without proper
             # asynchrony)
@@ -284,11 +274,12 @@ class _processExecutor():
                 return False
 
             if readyMsg != "READY\n":
-                raise InvocationError("Executor failed to initialize: "+readyMsg)
+                self.proc.terminate()
+                output = self.proc.stdout.read()
+                raise InvocationError("Executor failed to initialize: " + output)
 
             self.ready = True
             return True
-
 
     def send(self, msg, funcID, stats=None):
         if self.dead:
@@ -305,7 +296,6 @@ class _processExecutor():
 
         return msgId
 
-
     def recv(self, reqId, funcID, stats=None, block=True):
         """Recieve the response for the request with ID reqId. Users may only
         recv each ID exactly once. Responses are expected to come in order."""
@@ -321,19 +311,18 @@ class _processExecutor():
                 return None
             else:
                 self.lastResp += 1
-                self.resps[self.lastResp] = resp 
+                self.resps[self.lastResp] = resp
 
         with util.timer('t_responseDecode', stats):
             try:
                 resp = json.loads(self.resps[reqId])
-            except:
+            except Exception:
                 raise InvocationError(self.resps[reqId])
 
         if resp['error'] is not None:
             raise InvocationError(resp['error'])
 
         return resp['resp']
-
 
     def getConfig(self):
         """Returns a tuple of the configuration properties for this executor.
@@ -342,11 +331,10 @@ class _processExecutor():
         w.r.t. client requests."""
         return (self.packagePath, self.clientID, self.enableGpu, self.arrayMnt)
 
-
     def kill(self, force=False):
         """Wait for all outstanding work to complete, then kill the worker.
         Users can still call recv on this object, but they can no longer send.
-         
+
         This operation is synchronous in order to ensure that all resources are
         indeed freed."""
         self._setBlock(True)
@@ -366,7 +354,6 @@ class _processPool():
     def __init__(self):
         self.execs = []
 
-    #XXX deal with arrayMnt
     def getExecutor(self, packagePath, clientID, arrayMnt=None, stats=None, enableGpu=False):
 
         executor = None
@@ -392,7 +379,7 @@ class _processPool():
                 executor = _processExecutor(packagePath, clientID, arrayMnt=arrayMnt, enableGpu=enableGpu)
                 self.execs.append(executor)
 
-        return executor 
+        return executor
 
     def destroy(self):
         for ex in self.execs:
@@ -412,7 +399,7 @@ class ProcessRemoteFuncFuture():
         with util.timer('t_futureWait', self.stats):
             resp = self.proc.recv(self.reqID, self.funcID, stats=self.stats, block=block)
         return resp
-    
+
 
 def DestroyFuncs():
     """Creating a RemoteFunction may introduce global state, this function
@@ -425,6 +412,7 @@ def DestroyFuncs():
 # There may be multiple handles for the same function, we need to disambiguate these for various reasons (mostly stats). This global ensures unique ids.
 _processFuncNextID = 0
 
+
 class ProcessRemoteFunc(RemoteFunc):
     def __init__(self, packagePath, funcName, context, clientID=0, stats=None, enableGpu=False):
         self.stats = stats
@@ -435,7 +423,7 @@ class ProcessRemoteFunc(RemoteFunc):
         _processFuncNextID += 1
 
         # ID of the next request to make and the last completed request (respectively)
-        self.nextID = 0 
+        self.nextID = 0
         self.lastCompleted = -1
         # Maps completed request IDs to their responses, responses are removed once _awaitResp is called
         self.completedReqs = {}
@@ -445,40 +433,37 @@ class ProcessRemoteFunc(RemoteFunc):
         self.ctx = copy.copy(context)
         self.enableGpu = enableGpu
 
-
     def InvokeAsync(self, arg):
         proc = _processExecutors.getExecutor(self.packagePath, self.clientID, stats=self.stats, enableGpu=self.enableGpu)
 
-        req = { "command" : "invoke",
-                "stats" : util.profCollection(),
-                "fName" : self.fname,
-                "fArg" : arg }
+        req = {"command": "invoke",
+               "stats": util.profCollection(),
+               "fName": self.fname,
+               "fArg": arg}
 
         msgId = proc.send(req, self.funcID, stats=self.stats)
 
         fut = ProcessRemoteFuncFuture(msgId, proc, self.funcID, self.stats)
         return fut
 
-
     def Invoke(self, arg):
         with util.timer('t_invoke', self.stats):
             fut = self.InvokeAsync(arg)
             resp = fut.get()
-        return resp 
-
+        return resp
 
     def getStats(self):
         """Update the stats object passed during initialization and return a
         reference to it. You must call this to ensure that all statistics are
         available, otherwise you may only have partial results. getStats() is
         idempotent"""
-        #XXX strictly speaking, it's possible to get a different executor here, not sure how to deal with it
+        # XXX strictly speaking, it's possible to get a different executor here, not sure how to deal with it
         proc = _processExecutors.getExecutor(self.packagePath, self.clientID, enableGpu=self.enableGpu)
         statsReq = {
-                'command' : 'reportStats',
+                'command': 'reportStats',
                 # We always reset the worker since we now have those stats in
                 # our local stats and don't want to count them twice
-                'reset' : True 
+                'reset': True
         }
         msgID = proc.send(statsReq, self.funcID)
         workerStats = proc.recv(msgID, self.funcID)
@@ -489,12 +474,10 @@ class ProcessRemoteFunc(RemoteFunc):
             self.stats.mod('worker').merge(workerStats)
             return self.stats
 
-
     def resetStats(self):
         # getStats resets everything on the client
         self.getStats()
         self.stats.reset()
-        
 
     def Close(self):
         # State is global now, so there's nothing to clean, might even remove
@@ -511,7 +494,7 @@ def RemoteProcessServer(funcs, serverArgs):
     process). This function will return when the client is done with you
     (closes stdin). Server args are generally provided by libff.invoke on the
     command line (you should usually pass sys.argv).
-    
+
     funcs is a dictionary mapping cannonical function names (what a remote
     invoker would call) to the actual python function object"""
 
@@ -542,7 +525,7 @@ def RemoteProcessServer(funcs, serverArgs):
             req = json.loads(rawReq)
         except json.decoder.JSONDecodeError as e:
             err = "Failed to parse command (must be valid JSON): " + str(e)
-            _remoteServerRespond({ "error" : err })
+            _remoteServerRespond({"error": err})
             continue
         decodeTime = time.time() - start
 
@@ -551,28 +534,29 @@ def RemoteProcessServer(funcs, serverArgs):
                 if req['funcID'] not in stats:
                     stats[req['funcID']] = util.profCollection()
                 ctx.profs = stats[req['funcID']]
-                ctx.cudaDev = args.gpu 
+                ctx.cudaDev = args.gpu
                 if req['fName'] in funcs:
                     resp = funcs[req['fName']](req['fArg'], ctx)
                 else:
-                    _remoteServerRespond({"error" : "Unrecognized function: " + req['fName']})
+                    _remoteServerRespond({"error": "Unrecognized function: " + req['fName']})
 
                 ctx.profs['t_requestDecode'].increment(decodeTime*1000)
                 with util.timer('t_responseEncode', ctx.profs):
-                    _remoteServerRespond({"error" : None, "resp" : resp})
+                    _remoteServerRespond({"error": None, "resp": resp})
             elif req['command'] == 'reportStats':
                 if req['funcID'] not in stats:
                     respStats = util.profCollection()
                 else:
                     respStats = stats[req['funcID']]
-                _remoteServerRespond({"error" : None, "resp" : respStats})
+                _remoteServerRespond({"error": None, "resp": respStats})
                 if req['reset']:
                     stats.pop(req['funcID'], None)
             else:
-                _remoteServerRespond({"error" : "Unrecognized command: " + req['command']})
+                _remoteServerRespond({"error": "Unrecognized command: " + req['command']})
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
-            _remoteServerRespond({"error" : "Unhandled internal error: " + repr(e)})
+            _remoteServerRespond({"error": "Unhandled internal error: " + repr(e)})
+
 
 # ==============================================================================
 # Global Init

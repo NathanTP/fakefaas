@@ -5,3 +5,4 @@ optModel.onnx
 *.so
 python/libff.egg-info/
 python/test/kaas/dump.rdb
+.ropeproject

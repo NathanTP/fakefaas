@@ -12,6 +12,7 @@ from PIL import Image
 
 # import kaasServer as kaas
 import libff.kaas as kaas
+import libff.kaas.kaasFF
 import numpy as np
 
 redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
@@ -142,7 +143,7 @@ def runModel(inp, mode='direct'):
 
     req = kaas.kaasReq(kerns)
 
-    kaasHandle = kaas.getHandle(mode, libffCtx)
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
     kaasHandle.Invoke(req.toDict())
     
     c = np.frombuffer(libffCtx.kv.get('13'), dtype=np.float32)

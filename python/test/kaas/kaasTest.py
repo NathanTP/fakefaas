@@ -68,27 +68,13 @@ def testDoublify(mode='direct'):
     print(kaasHandle.getStats())
 
 
-def testDotProd(mode='direct'):
-    nElem = 1024
-    # nElem = 32
+def getDotProdReq(nElem):
     nByte = nElem*4
-
-    libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
-
-    aArr = np.arange(0, nElem, dtype=np.uint32)
-    bArr = np.arange(nElem, nElem*2, dtype=np.uint32)
-    # arrLen = np.uint64(nElem)
-
-    libffCtx.kv.put('a',   aArr)
-    libffCtx.kv.put('b',   bArr)
-    # libffCtx.kv.put('len', arrLen)
-
-    aBuf = kaas.bufferSpec('a', nByte)
-    bBuf = kaas.bufferSpec('b', nByte)
+    aBuf = kaas.bufferSpec('inpA', nByte, key="a")
+    bBuf = kaas.bufferSpec('inpB', nByte, key="b")
     # lenBuf = kaas.bufferSpec('len', arrLen.nbytes)
     prodOutBuf = kaas.bufferSpec('prodOut', nByte, ephemeral=True)
-    cBuf = kaas.bufferSpec('c', 8)
+    cBuf = kaas.bufferSpec('output', 8, key='c')
 
     args_prod = [(aBuf, 'i'), (bBuf, 'i'), (prodOutBuf, 'o')]
 
@@ -105,7 +91,23 @@ def testDotProd(mode='direct'):
                               (1, 1), (nElem // 2, 1, 1),
                               arguments=args_sum)
 
-    req = kaas.kaasReq([prodKern, sumKern])
+    return kaas.kaasReq([prodKern, sumKern])
+
+
+def testDotProd(mode='direct'):
+    nElem = 1024
+    # nElem = 32
+
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    aArr = np.arange(0, nElem, dtype=np.uint32)
+    bArr = np.arange(nElem, nElem*2, dtype=np.uint32)
+
+    libffCtx.kv.put('a',   aArr)
+    libffCtx.kv.put('b',   bArr)
+
+    req = getDotProdReq(nElem)
 
     kaasHandle.Invoke(req.toDict())
 
@@ -124,6 +126,49 @@ def testDotProd(mode='direct'):
     else:
         print("PASS")
 
+
+def testRekey(mode='direct'):
+    nElem = 1024
+
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    aArr = np.arange(0, nElem, dtype=np.uint32)
+    bArr = np.arange(nElem, nElem*2, dtype=np.uint32)
+    libffCtx.kv.put('a',   aArr)
+    libffCtx.kv.put('b',   bArr)
+
+    req = getDotProdReq(nElem)
+
+    kaasHandle.Invoke(req.toDict())
+
+    c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
+
+    aNew = np.arange(nElem*2, nElem*3, dtype=np.uint32)
+    bNew = np.arange(nElem*3, nElem*4, dtype=np.uint32)
+    libffCtx.kv.put('aNew',   aNew)
+    libffCtx.kv.put('bNew',   bNew)
+
+    req.reKey({'inpA': 'aNew', 'inpB': 'bNew', 'output': "cNew"})
+    kaasHandle.Invoke(req.toDict())
+    c2 = np.frombuffer(libffCtx.kv.get('cNew'), dtype=np.uint32)[0]
+
+    expect1 = np.dot(aArr, bArr)
+    expect2 = np.dot(aNew, bNew)
+
+    if c != expect1:
+        print("Failure:")
+        print("Original Call Expected: ", expect1)
+        print("Got: ", c)
+        return False
+
+    if c2 != expect2:
+        print("Failure:")
+        print("Renamed Call Expected: ", expect2)
+        print("Got: ", c2)
+        return False
+
+    print("PASS")
 
 rng = np.random.default_rng()
 
@@ -209,18 +254,18 @@ if __name__ == "__main__":
         sp.call(["make"], cwd=(testPath / 'kerns'))
         print("libkaasMicro.cubin built sucessefully\n")
 
-    if not libff.invoke.cudaAvailable:
-        print("KaaS requires CUDA support from libff")
-        sys.exit(1)
-
-    print("Double Test:")
+    print("Rekey:")
     with ff.testenv('simple', mode):
-        testDoublify(mode)
+        testRekey(mode)
 
-    print("Dot Product Test:")
-    with ff.testenv('simple', mode):
-        testDotProd(mode)
-
-    print("MatMul Test")
-    with ff.testenv('simple', mode):
-        testMatMul(mode)
+    # print("Double Test:")
+    # with ff.testenv('simple', mode):
+    #     testDoublify(mode)
+    #
+    # print("Dot Product Test:")
+    # with ff.testenv('simple', mode):
+    #     testDotProd(mode)
+    #
+    # print("MatMul Test")
+    # with ff.testenv('simple', mode):
+    #     testMatMul(mode)

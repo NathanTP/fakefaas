@@ -34,7 +34,7 @@ class rayKV():
     def flush(self):
         refs = self.newRefs
         self.newRefs = []
-        return refs
+        return tuple(refs)
 
 
 @ray.remote(num_gpus=1)
@@ -46,4 +46,13 @@ def kaasServeRay(req):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     kReq = kaas.kaasReq.fromDict(req)
     _server.kaasServeInternal(kReq, ctx)
-    return ctx.kv.flush()
+    returns = ctx.kv.flush()
+
+    # This is a ray weirdness. If you return multiple values in a tuple, it's
+    # returned as multiple independent references, if you return a tuple of length
+    # one, it's passed as a reference to a tuple. We can't have an extra layer
+    # of indirection for references.
+    if len(returns) == 1:
+        return returns[0]
+    else:
+        return returns

@@ -24,12 +24,28 @@ class bufferSpec():
     def fromDict(cls, d):
         return cls(d['name'],
                    d['size'],
-                   d.get('ephemeral', False),
-                   d.get('const', False))
+                   key=d.get('key', None),
+                   ephemeral=d.get('ephemeral', False),
+                   const=d.get('const', False))
 
-    def __init__(self, name, size, ephemeral=False, const=False):
-        # Key to use in the kv store
+    def __init__(self, name, size, key=None, ephemeral=False, const=False):
+        """Arguments:
+            name - internal name for this buffer
+            size - size of the buffer (in bytes)
+            key - For non-epehemeral buffers, this is the key in the kv store
+                  to use. If key is not specified, name is used as the key.
+            epehemeral - If true, this buffer does not interact with the KV store
+            const - If true, this buffer is guaranteed to never change in the KV store
+        """
         self.name = name
+
+        if key is None:
+            # This is for backwards compatibility with older KaaS code that
+            # uses name for both internal and kv name. It should not matter for
+            # new code and shouldn't be relied on going forward.
+            self.key = name
+        else:
+            self.key = key
 
         # Size of the buffer in bytes
         self.size = size
@@ -49,6 +65,7 @@ class bufferSpec():
         return {
                 'name': self.name,
                 'size': self.size,
+                'key': self.key,
                 'ephemeral': self.ephemeral,
                 'const': self.const
             }
@@ -163,6 +180,17 @@ class kaasReq():
     def __init__(self, kernels):
         """Turn a list of kernelSpecs into a kaas Request"""
         self.kernels = kernels
+
+    def reKey(self, keyMap):
+        """Renames kv keys for non-ephemeral buffers based on a keyMap.
+        Internal names remain the same and epehemeral buffers are not affected.
+        keyMap: {internalName -> newKey}
+        """
+        for kern in self.kernels:
+            for buf in kern.arguments:
+                if not buf.ephemeral:
+                    if buf.name in keyMap:
+                        buf.key = keyMap[buf.name]
 
     def toDict(self):
         return {"kernels": [k.toDict() for k in self.kernels]}

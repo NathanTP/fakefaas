@@ -81,9 +81,10 @@ eventMetrics2 = [
 class kaasBuf():
     @classmethod
     def fromSpec(cls, spec, src=None):
-        return cls(spec.name, src, size=spec.size, const=spec.const, ephemeral=spec.ephemeral)
+        return cls(spec.name, spec.key, src,
+                   size=spec.size, const=spec.const, ephemeral=spec.ephemeral)
 
-    def __init__(self, name, src, size=None, const=False, ephemeral=False):
+    def __init__(self, name, key, src, size=None, const=False, ephemeral=False):
         """A kaasBuffer represnts a binary data buffer managed by the kaas
         system, it can be either on the device or on the host. If src is
         provided, it will be used as the buffer, otherwise size will be used to
@@ -92,6 +93,7 @@ class kaasBuf():
         host and device memory.
         """
         self.name = name
+        self.key = key
         self.dirty = False
         self.const = const
         self.ephemeral = ephemeral
@@ -111,8 +113,8 @@ class kaasBuf():
         return self.name
 
     def __repr__(self):
-        return "KaaS Buffer (name={}, dirty={}, const={}, ephemeral={}, onDevice={}, size={})".format(
-                self.name, self.dirty, self.const, self.ephemeral, self.onDevice, self.size)
+        return "KaaS Buffer (name={}, key={}, dirty={}, const={}, ephemeral={}, onDevice={}, size={})".format(
+                self.name, self.key, self.dirty, self.const, self.ephemeral, self.onDevice, self.size)
 
     def setHostBuffer(self, newBuf):
         """Allows changing the host-side memory allocated to this buffer. This
@@ -230,6 +232,8 @@ class kernelCache():
     def __init__(self):
         self.libs = {}
         self.kerns = {}
+
+        pycuda.driver.init()
         self.cudaCtx = pycuda.tools.make_default_context()
 
     def get(self, spec):
@@ -365,12 +369,12 @@ class bufferCache():
                     self.ephemerals[bSpec.name] = buf
             else:
                 with ff.timer('t_hostDLoad', getProf(), final=False):
-                    raw = self.kv.get(bSpec.name, profile=getProf(mod='kv'), profFinal=False)
+                    raw = self.kv.get(bSpec.key, profile=getProf(mod='kv'), profFinal=False)
                 if raw is None:
                     logging.debug("Loading (new buffer): {}".format(bSpec.name))
                     buf = kaasBuf.fromSpec(bSpec)
                 else:
-                    logging.debug("Loading from KV: {}".format(bSpec.name))
+                    logging.debug("Loading from KV: {} (key: {})".format(bSpec.name, bSpec.key))
                     updateProf('s_hostDLoad', bSpec.size)
                     buf = kaasBuf.fromSpec(bSpec, raw)
 
@@ -394,10 +398,10 @@ class bufferCache():
             if not buf.ephemeral:
                 # Data are stored as numpy arrays because memoryviews can't be
                 # pickled. This should still be zero copy.
-                logging.debug("Writing back to kv: {}".format(buf.name))
+                logging.debug("Writing back to kv: {} (key: {})".format(buf.name, buf.key))
                 updateProf('n_hostDWriteBack', 1)
                 with ff.timer('t_hostDWriteBack', getProf(), final=False):
-                    self.kv.put(buf.name, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
+                    self.kv.put(buf.key, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
             buf.dirty = False
 
     def flush(self):

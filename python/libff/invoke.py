@@ -14,15 +14,6 @@ from . import array
 from . import kv
 from . import util
 
-try:
-    import pycuda.driver as cuda
-    import pycuda.autoinit  # NOQA
-    cudaAvailable = True
-    cudaNDev = cuda.Device.count()
-    cudaFreeDevs = [i for i in range(cudaNDev)]
-except ImportError:
-    cudaAvailable = False
-
 
 class InvocationError(Exception):
     def __init__(self, msg):
@@ -30,6 +21,22 @@ class InvocationError(Exception):
 
     def __str__(self):
         return "Remote function invocation error: " + self.msg
+
+
+cudaFreeDevs = None
+
+
+# Not the end of the world, but getting the device count adds ~10ms to the
+# import time so we only do it if we have to
+def initCuda():
+    global cudaFreeDevs
+    if cudaFreeDevs is not None:
+        return
+    else:
+        proc = sp.run(['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                      stdout=sp.PIPE, text=True, check=True)
+        cudaNDev = proc.stdout.count('\n')
+        cudaFreeDevs = [i for i in range(cudaNDev)]
 
 
 class RemoteFunc(abc.ABC):
@@ -139,7 +146,8 @@ class DirectRemoteFunc(RemoteFunc):
         else:
             self.stats = stats
 
-        if cudaAvailable and enableGpu:
+        if enableGpu:
+            initCuda()
             if len(cudaFreeDevs) == 0:
                 raise RuntimeError("No more GPUs available!")
             self.ctx.cudaDev = cudaFreeDevs.pop()
@@ -212,7 +220,7 @@ class _processExecutor():
         self.nextMsgId = 0
         self.dead = False
 
-        if cudaAvailable and enableGpu:
+        if enableGpu:
             if len(cudaFreeDevs) == 0:
                 raise RuntimeError("No more GPUs available!")
             self.cudaDev = cudaFreeDevs.pop()
@@ -355,6 +363,8 @@ class _processPool():
         self.execs = []
 
     def getExecutor(self, packagePath, clientID, arrayMnt=None, stats=None, enableGpu=False):
+        if enableGpu:
+            initCuda()
 
         executor = None
         config = (packagePath, clientID, enableGpu, arrayMnt)

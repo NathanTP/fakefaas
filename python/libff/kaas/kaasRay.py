@@ -37,12 +37,12 @@ class rayKV():
         return tuple(refs)
 
 
-@ray.remote(num_gpus=1)
 def kaasServeRay(req):
-    """Handle a single KaaS request as a task. GPU state is cached and no
-    attempt is made to be polite in sharing the GPU. The user should ensure
-    that the only GPU-enabled functions running are kaasServeRay(). Returns a
-    list of handles of outputs (in the same order as the request)"""
+    """Handle a single KaaS request in the current thread/actor/task. GPU state
+    is cached and no attempt is made to be polite in sharing the GPU. The user
+    should ensure that the only GPU-enabled functions running are
+    kaasServeRay(). Returns a list of handles of outputs (in the same order as
+    the request)"""
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     kReq = kaas.kaasReq.fromDict(req)
     _server.kaasServeInternal(kReq, ctx)
@@ -56,3 +56,10 @@ def kaasServeRay(req):
         return returns[0]
     else:
         return returns
+
+
+@ray.remote(num_gpus=1)
+def kaasServeRayTask(req):
+    """Handle a single KaaS request as a ray task. See kaasServeRay for
+    details."""
+    return kaasServeRay(req)

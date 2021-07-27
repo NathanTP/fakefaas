@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ -z "$CUTLASS_PATH" ]; then
-    CUTLASS_PATH=./cutlass-src
+    CUTLASS_PATH=./cutlass
 fi
 
 CUTLASS_PATH=$(realpath $CUTLASS_PATH)
@@ -27,3 +27,16 @@ CUTLASS_PATH=$(realpath $CUTLASS_PATH)
 #     -lcudadevrt -lcudart_static -lrt -lpthread -ldl \
 #     -L"/usr/local/cuda/targets/x86_64-linux/lib/stubs" \
 #     -L"/usr/local/cuda/targets/x86_64-linux/lib"
+
+/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler \
+    -I/scratch/jasonding/fakefaas/examples/cutlass/cutlass/include \
+    -I/scratch/jasonding/fakefaas/examples/cutlass/cutlass/examples/00_basic_gemm \
+    -I/scratch/jasonding/fakefaas/examples/cutlass/cutlass/g/examples/common \
+    -I/scratch/jasonding/fakefaas/examples/cutlass/cutlass/g/build/include \
+    -I/usr/local/cuda/include \
+    -I/scratch/jasonding/fakefaas/examples/cutlass/cutlass/g/tools/util/include \
+    -O0 -DNDEBUG -Xcompiler=-fPIC \
+    -DCUTLASS_ENABLE_TENSOR_CORE_MMA=1 -DCUTLASS_TEST_LEVEL=0 -DCUTLASS_DEBUG_TRACE_LEVEL=0 \
+    -Xcompiler=-Wconversion -Xcompiler=-fno-strict-aliasing \
+    -gencode=arch=compute_35,code=sm_35 -std=c++11 \
+    -x cu -c basic_gemm.cu -o out

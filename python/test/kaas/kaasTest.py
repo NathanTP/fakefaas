@@ -66,6 +66,7 @@ def testDoublify(mode='direct'):
 
     print("Stats: ")
     print(kaasHandle.getStats())
+    kaasHandle.Close()
 
 
 def getDotProdReq(nElem):
@@ -110,6 +111,7 @@ def testDotProd(mode='direct'):
     req = getDotProdReq(nElem)
 
     kaasHandle.Invoke(req.toDict())
+    kaasHandle.Close()
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
 
@@ -168,7 +170,9 @@ def testRekey(mode='direct'):
         print("Got: ", c2)
         return False
 
+    kaasHandle.Close()
     print("PASS")
+
 
 rng = np.random.default_rng()
 
@@ -212,6 +216,7 @@ def testMatMul(mode='direct'):
     req = kaas.kaasReq([kern])
 
     kaasHandle.Invoke(req.toDict())
+    kaasHandle.Close()
 
     cRaw = libffCtx.kv.get('C')
     cArr = np.frombuffer(cRaw, dtype=np.float32)
@@ -258,14 +263,14 @@ if __name__ == "__main__":
     with ff.testenv('simple', mode):
         testRekey(mode)
 
-    # print("Double Test:")
-    # with ff.testenv('simple', mode):
-    #     testDoublify(mode)
-    #
-    # print("Dot Product Test:")
-    # with ff.testenv('simple', mode):
-    #     testDotProd(mode)
-    #
-    # print("MatMul Test")
-    # with ff.testenv('simple', mode):
-    #     testMatMul(mode)
+    print("Double Test:")
+    with ff.testenv('simple', mode):
+        testDoublify(mode)
+
+    print("Dot Product Test:")
+    with ff.testenv('simple', mode):
+        testDotProd(mode)
+
+    print("MatMul Test")
+    with ff.testenv('simple', mode):
+        testMatMul(mode)

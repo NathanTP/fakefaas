@@ -4,30 +4,31 @@ import sys
 from pprint import pprint
 
 import libff
-from libff import invoke
+import libff.invoke
 
 workerPath = pathlib.Path(__file__).parent.resolve() / "worker.py"
+
 
 def helloWorld(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
 
     func = constructor(workerPath, "echo", ctx)
 
-    resp = func.Invoke({"hello" : "world"})
+    resp = func.Invoke({"hello": "world"})
     print(resp)
 
 
 def testNonBlock(constructor):
     """non-blocking only works for 'process' mode"""
     if constructor is libff.invoke.DirectRemoteFunc:
-        print("Non-blocking mode only works with process remote funcs") 
+        print("Non-blocking mode only works with process remote funcs")
         return False
 
     ctx = libff.invoke.RemoteCtx(None, None)
     func = constructor(workerPath, "perfSim", ctx)
 
     start = time.time()
-    fut = func.InvokeAsync({"runtime" : 1000})
+    fut = func.InvokeAsync({"runtime": 1000})
     reqFinishTime = time.time() - start
 
     start = time.time()
@@ -55,7 +56,7 @@ def testNonBlock(constructor):
         return False
 
     return True
-   
+
 
 def testCuda(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
@@ -89,7 +90,7 @@ def testCuda(constructor):
     # The test system only has 2 GPUs, libff is gonna have to kill an executor
     # for this to work.
     f3 = constructor(workerPath, "cuda", ctx, clientID=2, enableGpu=True)
-    r3 = f3.Invoke({})
+    f3.Invoke({})
 
     return True
 
@@ -102,7 +103,7 @@ def testState(constructor):
 
     f0 = constructor(workerPath, "state", ctx)
 
-    resp = f0.Invoke({"scratchData" : "firstData"})
+    resp = f0.Invoke({"scratchData": "firstData"})
     if resp['cachedData'] != 'firstData':
         print("FAIL: First invoke didn't return scrach data")
         return False
@@ -112,7 +113,7 @@ def testState(constructor):
         print("FAIL: function didn't cache data")
         return False
 
-    resp = f0.Invoke({"scratchData" : "secondData"})
+    resp = f0.Invoke({"scratchData": "secondData"})
     if resp['cachedData'] != 'secondData':
         print("FAIL: function didn't return new data")
         return False
@@ -145,11 +146,12 @@ def _checkStats(stats, measured, expect):
 
 def _runStatsFunc(func, runTime):
     start = time.time()
-    resp = func.Invoke({"runtime" : runTime})
+    func.Invoke({"runtime": runTime})
     measured = (time.time() - start)*1000
     stats = func.getStats().report()
 
     return (stats, measured)
+
 
 def stats(constructor):
     sleepTime = 1000
@@ -160,9 +162,9 @@ def stats(constructor):
     f1 = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f1'))
     f2 = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
 
-    #==========================================================================
-    # Cold start and single function behavior 
-    #==========================================================================
+    # =========================================================================
+    # Cold start and single function behavior
+    # =========================================================================
     coldStats, coldMeasured = _runStatsFunc(f1, sleepTime)
     if not _checkStats(coldStats, coldMeasured, sleepTime):
         print("Cold start ran too fast")
@@ -172,9 +174,9 @@ def stats(constructor):
     f1.resetStats()
     stats.reset()
 
-    #==========================================================================
-    # Warm start and multiple function behavior 
-    #==========================================================================
+    # =========================================================================
+    # Warm start and multiple function behavior
+    # =========================================================================
     # Multiple functions can be warm at the same time and should maintain stats separately
     for i in range(repeat):
         stat1, measured1 = _runStatsFunc(f1, sleepTime)
@@ -192,14 +194,14 @@ def stats(constructor):
     f2.resetStats()
     stats.reset()
 
-    #==========================================================================
+    # =========================================================================
     # Reset logic
-    #==========================================================================
-    resp = f1.Invoke({"runtime" : sleepTime})
-    resp = f2.Invoke({"runtime" : sleepTime})
+    # =========================================================================
+    f1.Invoke({"runtime": sleepTime})
+    f2.Invoke({"runtime": sleepTime})
     f1.resetStats()
 
-    # Reset stats should clear everything, even on the worker 
+    # Reset stats should clear everything, even on the worker
     stats1 = f1.getStats().report()
     if len(stats1) != 0:
         print("Stats were not cleaned")
@@ -220,8 +222,8 @@ def testAsync(constructor):
     func = constructor(workerPath, "perfSim", ctx)
 
     start = time.time()
-    fut0 = func.InvokeAsync({"runtime" : 1000})
-    fut1 = func.InvokeAsync({"runtime" : 1000})
+    fut0 = func.InvokeAsync({"runtime": 1000})
+    fut1 = func.InvokeAsync({"runtime": 1000})
     reqFinishTime = time.time() - start
 
     start = time.time()
@@ -230,7 +232,7 @@ def testAsync(constructor):
     asyncRuntime = time.time() - start
 
     start = time.time()
-    resp2 = func.Invoke({"runtime" : 1000})
+    resp2 = func.Invoke({"runtime": 1000})
     syncRuntime = time.time() - start
 
     if reqFinishTime >= 1:
@@ -253,6 +255,7 @@ def testAsync(constructor):
 
     return True
 
+
 if __name__ == "__main__":
     funcConstructor = libff.invoke.ProcessRemoteFunc
     # funcConstructor = libff.invoke.DirectRemoteFunc
@@ -261,13 +264,12 @@ if __name__ == "__main__":
     helloWorld(funcConstructor)
     print("PASS")
 
-    if invoke.cudaAvailable:
-        print("Testing GPU support")
-        if not testCuda(funcConstructor):
-            sys.exit(1)
-        print("PASS")
-    else:
-        print("GPU support unavailable, skipping test")
+    # This test isn't super robust to different systems. We'll rely on KaaS to
+    # test GPU support
+    # print("Testing GPU support")
+    # if not testCuda(funcConstructor):
+    #     sys.exit(1)
+    # print("PASS")
 
     print("Testing Stats")
     if not stats(funcConstructor):

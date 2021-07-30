@@ -3,15 +3,12 @@ import libff.kv
 import numpy as np
 import sys
 import subprocess as sp
-#import posix_ipc
-#import mmap
+
 
 # Tests the most basic put/get/delete interface on default options for the kv
 def testSimple(mode):
     if mode == 'direct':
         kv = ff.kv.Local()
-    #elif mode == 'Anna':
-    #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     elif mode == 'sharemem':
         kv = ff.kv.Shmmap()
     else:
@@ -28,8 +25,6 @@ def testSimple(mode):
         print("Got: ", aFetched)
         return False
 
-    #if mode == 'Anna':
-    #    return True
     if mode == 'sharemem':
         b = np.arange(20, dtype=np.uint32)
         kv.put('testB', b)
@@ -51,12 +46,12 @@ def testSimple(mode):
 
     keyDeleted = False
     try:
-        aDeleted = kv.get('testA')
+        kv.get('testA')
     except libff.kv.KVKeyError as e:
         if e.key != 'testA':
             print("Exception reported wrong key")
             print("\tExpected: testA")
-            print("\tGot: ",e.key)
+            print("\tGot: ", e.key)
             return False
         keyDeleted = True
 
@@ -71,8 +66,6 @@ def testSimple(mode):
 def testCopy(mode):
     if mode == 'direct':
         kv = ff.kv.Local(copyObjs=True)
-    #elif mode == 'Anna':
-    #    kv = ff.kv.Anna("127.0.0.1", "127.0.0.1", local=True)
     elif mode == 'sharemem':
         kv = ff.kv.Shmmap()
     else:
@@ -97,6 +90,7 @@ def testCopy(mode):
         kv.destroy()
     return True
 
+
 # Test multiprocessing by using subprocess
 def testMultiproc(mode):
     if mode == 'sharemem':
@@ -119,8 +113,8 @@ def testMultiproc(mode):
         '''
     return True
 
+
 def main():
-    #for mode in ['direct', 'process', 'Anna']:
     for mode in ['direct', 'process', 'sharemem']:
         print("Running simple test (" + mode + "):")
         with ff.testenv('simple', mode):
@@ -139,7 +133,7 @@ def main():
             print("PASS")
         else:
             sys.exit(1)
-        
+
         if mode != 'sharemem':
             continue
         print("Running multiproc test (" + mode + "):")
@@ -150,6 +144,7 @@ def main():
             print("PASS")
         else:
             sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

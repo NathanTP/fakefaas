@@ -1,16 +1,14 @@
-import sys
 import pycuda.driver as cuda
-import pycuda.autoinit
-from pycuda.compiler import SourceModule, DynamicModule
+import pycuda.autoinit  # NOQA
+from pycuda.compiler import SourceModule
 import numpy as np
 import ctypes
 import ctypes.util
-import pathlib
 
 
 def test(func):
     np.random.seed(0)
-    a = np.random.randn(4,4)
+    a = np.random.randn(4, 4)
     a = a.astype(np.float32)
     a_gpu = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_gpu, a)
@@ -41,7 +39,7 @@ def getProdJit():
         {
             int id = blockIdx.x*blockDim.x+threadIdx.x;
             if (id < *len) {
-                vout[id] = v0[id] * v1[id];    
+                vout[id] = v0[id] * v1[id];
             }
         }
         """, options=["-std=c++14"])
@@ -56,8 +54,8 @@ def getJitted():
       #include <stdint.h>
       __global__ void multiply(float *a, float v)
       {
-	int idx = threadIdx.x + threadIdx.y*4;
-	a[idx] *= v;
+          int idx = threadIdx.x + threadIdx.y*4;
+          a[idx] *= v;
       }
       """)
     func = mod.get_function("multiply")
@@ -81,7 +79,7 @@ def testProd():
     cuda.memcpy_htod(len_d, ctypes.c_uint64(8))
 
     grid = (1, 1)
-    block = (8,1,1)
+    block = (8, 1, 1)
 
     bufs = [a_d, b_d, c_d, len_d]
 

@@ -20,7 +20,7 @@ def helloWorld(constructor):
 def testNonBlock(constructor):
     """non-blocking only works for 'process' mode"""
     if constructor is libff.invoke.DirectRemoteFunc:
-        print("Non-blocking mode only works with process remote funcs") 
+        print("Non-blocking mode only works with process remote funcs")
         return False
 
     ctx = libff.invoke.RemoteCtx(None, None)
@@ -55,7 +55,7 @@ def testNonBlock(constructor):
         return False
 
     return True
-   
+
 
 def testCuda(constructor):
     ctx = libff.invoke.RemoteCtx(None, None)
@@ -161,7 +161,7 @@ def stats(constructor):
     f2 = constructor(workerPath, "perfSim", ctx, stats=stats.mod('f2'))
 
     #==========================================================================
-    # Cold start and single function behavior 
+    # Cold start and single function behavior
     #==========================================================================
     coldStats, coldMeasured = _runStatsFunc(f1, sleepTime)
     if not _checkStats(coldStats, coldMeasured, sleepTime):
@@ -173,7 +173,7 @@ def stats(constructor):
     stats.reset()
 
     #==========================================================================
-    # Warm start and multiple function behavior 
+    # Warm start and multiple function behavior
     #==========================================================================
     # Multiple functions can be warm at the same time and should maintain stats separately
     for i in range(repeat):
@@ -199,7 +199,7 @@ def stats(constructor):
     resp = f2.Invoke({"runtime" : sleepTime})
     f1.resetStats()
 
-    # Reset stats should clear everything, even on the worker 
+    # Reset stats should clear everything, even on the worker
     stats1 = f1.getStats().report()
     if len(stats1) != 0:
         print("Stats were not cleaned")
@@ -253,6 +253,7 @@ def testAsync(constructor):
 
     return True
 
+
 if __name__ == "__main__":
     funcConstructor = libff.invoke.ProcessRemoteFunc
     # funcConstructor = libff.invoke.DirectRemoteFunc
@@ -261,13 +262,12 @@ if __name__ == "__main__":
     helloWorld(funcConstructor)
     print("PASS")
 
-    if invoke.cudaAvailable:
-        print("Testing GPU support")
-        if not testCuda(funcConstructor):
-            sys.exit(1)
-        print("PASS")
-    else:
-        print("GPU support unavailable, skipping test")
+    # This test isn't super robust to different systems. We'll rely on KaaS to
+    # test GPU support
+    # print("Testing GPU support")
+    # if not testCuda(funcConstructor):
+    #     sys.exit(1)
+    # print("PASS")
 
     print("Testing Stats")
     if not stats(funcConstructor):

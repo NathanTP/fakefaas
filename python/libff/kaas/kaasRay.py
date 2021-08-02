@@ -13,10 +13,10 @@ class rayKV():
     for any newly added objects that can be passed back to the caller."""
 
     def __init__(self):
-        self.newRefs = []
+        self.newRefs = {}
 
     def put(self, k, v, profile=None, profFinal=True):
-        self.newRefs.append(ray.put(v))
+        self.newRefs[k] = ray.put(v)
 
     def get(self, k, profile=None, profFinal=True):
         # Ray returns immutable objects so we have to make a copy
@@ -31,11 +31,6 @@ class rayKV():
         # independently
         pass
 
-    def flush(self):
-        refs = self.newRefs
-        self.newRefs = []
-        return tuple(refs)
-
 
 def kaasServeRay(req):
     """Handle a single KaaS request in the current thread/actor/task. GPU state
@@ -46,7 +41,13 @@ def kaasServeRay(req):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     kReq = kaas.kaasReq.fromDict(req)
     _server.kaasServeInternal(kReq, ctx)
-    returns = ctx.kv.flush()
+
+    # Returns is an ordered list of output ray references
+    returns = []
+    for kern in kReq.kernels:
+        for out in kern.outputs:
+            if not out.ephemeral:
+                returns.append(ctx.kv.newRefs[out.key])
 
     # This is a ray weirdness. If you return multiple values in a tuple, it's
     # returned as multiple independent references, if you return a tuple of length

@@ -44,6 +44,16 @@ __global__ void prodKern(uint64_t len, uint32_t *v0, uint32_t *v1, uint32_t *vou
     }
 }
 
+extern "C"
+__global__ void multipleOut(uint64_t len, uint32_t *inp, uint32_t *outIncremented, uint32_t *outDoubled)
+{
+    int id = blockIdx.x*blockDim.x+threadIdx.x;
+    if (id < len) {
+        outDoubled[id] = inp[id] * 2;
+        outIncremented[id] = inp[id] + 1;
+    }
+}
+
 // Row Major
 #define flatIdx(R,C,NROW,NCOL) ((R*NCOL)+C)
 

@@ -8,46 +8,88 @@ import ray
 testPath = pathlib.Path(__file__).resolve().parent
 
 
-def testDoublify():
-    ray.init()
+@ray.remote(num_gpus=1)
+def runKaasTask(req):
+    returns = kaasRay.kaasServeRay(req)
+    return returns
 
-    testArray = np.random.randn(16).astype(np.float32)
+
+def testMultipleOut():
+    nElem = 16
+
+    testArray = np.arange(0, nElem, dtype=np.uint32)
+
+    inpRef = ray.put(testArray.data)
+
+    args = [(kaas.bufferSpec(inpRef, testArray.nbytes), 'i'),
+            (kaas.bufferSpec('outIncremented', testArray.nbytes, ephemeral=False), 'o'),
+            (kaas.bufferSpec('outDoubled', testArray.nbytes, ephemeral=False), 'o')]
+
+    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                           'multipleOut',
+                           (1, 1), (nElem, 1, 1),
+                           literals=[kaas.literalSpec('Q', nElem)],
+                           arguments=args)
+
+    req = kaas.kaasReq([kern])
+
+    retRef = runKaasTask.remote(req.toDict())
+
+    outRefs = ray.get(retRef)
+
+    incremented = np.frombuffer(ray.get(outRefs[0]), dtype=np.uint32)
+    doubled = np.frombuffer(ray.get(outRefs[1]), dtype=np.uint32)
+
+    expect = testArray + 1
+    if not np.array_equal(incremented, expect):
+        print("Fail: increment didn't work")
+        print("\tExpect: ", expect)
+        print("\tGot: ", incremented)
+        # return False
+
+    expect = testArray * 2
+    if not np.array_equal(doubled, expect):
+        print("Fail: double didn't work")
+        print("\tExpect: ", expect)
+        print("\tGot: ", doubled)
+        return False
+
+    print("PASS")
+    return True
+
+
+def testSum():
+    testArray = np.arange(0, 16, dtype=np.uint32)
     origArray = testArray.copy()
 
     inpRef = ray.put(testArray.data)
 
-    # doublify is in-place
-    # XXX kaas currently conflates GPU buffers and KV objects. This means you
-    # can't have an in-place kernel that writes the output to a new key. Gotta
-    # fix this, but this works around it for now since Ray ignores the output
-    # key but KaaS uses it to identify the buffer.
-    arguments = [(kaas.bufferSpec(inpRef, testArray.nbytes), 'io')]
+    args = [(kaas.bufferSpec(inpRef, testArray.nbytes), 'i'),
+            (kaas.bufferSpec('out', 4, ephemeral=False), 'o')]
 
     kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
-                           'doublifyKern',
-                           (1, 1), (16, 1, 1),
-                           arguments=arguments)
+                           'sumKern',
+                           (1, 1), (8, 1, 1),
+                           arguments=args)
 
     req = kaas.kaasReq([kern])
 
-    # This is just for the test, a real system would use libff to invoke the
-    # kaas server
-    outs = kaasRay.kaasServeRay.remote(req.toDict())
-    outs = ray.get(outs)
-    assert len(outs) == 1
+    retRef = runKaasTask.remote(req.toDict())
 
-    doubledBytes = ray.get(outs[0])
-    doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
+    outRef = ray.get(retRef)
+    kaasSum = np.frombuffer(ray.get(outRef), dtype=np.uint32)[0]
 
-    expect = origArray*2
-    if not np.array_equal(doubledArray, expect):
-        print("FAIL")
-        print("Expected:")
-        print(expect)
-        print("Got:")
-        print(doubledArray)
+    expect = origArray.sum()
+    if kaasSum != expect:
+        print("Fail: results don't match")
+        print("\tExpect: ", expect)
+        print("\tGot: ", kaasSum)
     else:
         print("PASS")
 
 
-testDoublify()
+ray.init()
+print("Sum Test:")
+testSum()
+print("Multiple Output Test:")
+testMultipleOut()

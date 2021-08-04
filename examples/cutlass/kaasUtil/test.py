@@ -129,14 +129,21 @@ def testSgemm(M, N, K, alpha, beta):
     refC_h = np.zeros(shape=(M, N), dtype=np.float32)
     cuda.memcpy_dtoh(refC_h, refC_d)
 
-    print("Cutlass Kern Result: ")
+    print("Cutlass Kern Result:")
     print(c)
 
     print("Reference Kern Result:")
     print(refC_h)
 
     print("NP Result: ")
-    print(np.matmul(a, b))
+    np_res = np.matmul(a.T, b.T).T
+    print(np_res)
+
+    # Check difference
+    print("Difference between cutlass and reference result:")
+    print(c - refC_h)
+    print("Difference between cutlass and numpy result:")
+    print(c - np_res)
 
 
 testSgemm(128, 128, 128, 1.0, 0.0)

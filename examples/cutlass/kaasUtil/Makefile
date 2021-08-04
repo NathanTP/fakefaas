@@ -55,3 +55,5 @@ basic_gemm: basic_gemm.cu cutlassAdapters.so cutlass.cubin
 	-gencode=arch=compute_$(COMPUTE_CAP),code=sm_$(COMPUTE_CAP) -std=c++11 \
 	-x cu -o $@ $<
 
+clean: 
+	rm cutlassAdapters.so cutlass.cubin basic_gemm

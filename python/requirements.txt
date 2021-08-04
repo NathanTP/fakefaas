@@ -1,4 +1,5 @@
 redis
 jsonpickle
 numpy
-posix_ipc
+posix-ipc
+pycuda

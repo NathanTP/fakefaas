@@ -1,6 +1,3 @@
 [submodule "examples/cutlass/cutlass-src"]
 	path = examples/cutlass/cutlass-src
-	url = git@github.com:NVIDIA/cutlass.git
-[submodule "examples/cutlass/cutlass"]
-	path = examples/cutlass/cutlass
-	url = https://github.com/NathanTP/cutlass.git
+	url = git@github.com:NathanTP/cutlass.git

@@ -13,10 +13,10 @@ class rayKV():
     for any newly added objects that can be passed back to the caller."""
 
     def __init__(self):
-        self.newRefs = []
+        self.newRefs = {}
 
     def put(self, k, v, profile=None, profFinal=True):
-        self.newRefs.append(ray.put(v))
+        self.newRefs[k] = ray.put(v)
 
     def get(self, k, profile=None, profFinal=True):
         # Ray returns immutable objects so we have to make a copy
@@ -31,19 +31,36 @@ class rayKV():
         # independently
         pass
 
-    def flush(self):
-        refs = self.newRefs
-        self.newRefs = []
-        return refs
 
-
-@ray.remote(num_gpus=1)
 def kaasServeRay(req):
-    """Handle a single KaaS request as a task. GPU state is cached and no
-    attempt is made to be polite in sharing the GPU. The user should ensure
-    that the only GPU-enabled functions running are kaasServeRay(). Returns a
-    list of handles of outputs (in the same order as the request)"""
+    """Handle a single KaaS request in the current thread/actor/task. GPU state
+    is cached and no attempt is made to be polite in sharing the GPU. The user
+    should ensure that the only GPU-enabled functions running are
+    kaasServeRay(). Returns a list of handles of outputs (in the same order as
+    the request)"""
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     kReq = kaas.kaasReq.fromDict(req)
     _server.kaasServeInternal(kReq, ctx)
-    return ctx.kv.flush()
+
+    # Returns is an ordered list of output ray references
+    returns = []
+    for kern in kReq.kernels:
+        for out in kern.outputs:
+            if not out.ephemeral:
+                returns.append(ctx.kv.newRefs[out.key])
+
+    # This is a ray weirdness. If you return multiple values in a tuple, it's
+    # returned as multiple independent references, if you return a tuple of length
+    # one, it's passed as a reference to a tuple. We can't have an extra layer
+    # of indirection for references.
+    if len(returns) == 1:
+        return returns[0]
+    else:
+        return returns
+
+
+@ray.remote(num_gpus=1)
+def kaasServeRayTask(req):
+    """Handle a single KaaS request as a ray task. See kaasServeRay for
+    details."""
+    return kaasServeRay(req)

@@ -98,6 +98,11 @@ class kaasBuf():
         self.const = const
         self.ephemeral = ephemeral
 
+        # Pinned buffers cannot be evicted, this is mostly a safety check since
+        # the eviction policy would only evict important buffers if a single
+        # request doesn't fit in memory.
+        self.pin = False
+
         if src is not None:
             self.dbuf = None
             self.hbuf = memoryview(src)
@@ -132,9 +137,11 @@ class kaasBuf():
 
     def toDevice(self):
         """Place the buffer onto the device if it is not already there.  If no
-        host buffer is set, zeroed device memory will be allocated."""
+        host buffer is set, zeroed device memory will be allocated.
+
+        Returns: amount of additional memory used on the device"""
         if self.onDevice:
-            return
+            return 0
         else:
             logging.debug("Moving {} to device".format(self.name))
             updateProf('s_htod', self.size)
@@ -152,6 +159,7 @@ class kaasBuf():
                     cuda.memcpy_htod(self.dbuf, self.hbuf)
 
             self.onDevice = True
+            return self.size
 
     def toHost(self):
         """Copy data from the device (if present). If the kaasBuf does not have
@@ -236,6 +244,11 @@ class kernelCache():
         pycuda.driver.init()
         self.cudaCtx = pycuda.tools.make_default_context()
 
+        #XXX
+        import os
+        print(f"\n\nNumber of Devices {cuda.Device.count()}, pid: {os.getpid()}, name: {self.cudaCtx.get_device().pci_bus_id()}\n\n")
+
+
     def get(self, spec):
         if spec.name not in self.kerns:
             updateProf('n_KMiss', 1)
@@ -267,17 +280,23 @@ class lruPolicy():
             self.lruOther.remove(buf)
 
     def push(self, buf):
+        """Place buffer in the most-recently-used slot"""
         if buf.const:
             self.lruConst.appendleft(buf)
         else:
             self.lruOther.appendleft(buf)
 
     def pop(self):
+        """Remove and return the least recently used buffer"""
         # pull from lruOther if we can, otherwise start evicting consts
         if self.lruOther:
             b = self.lruOther.pop()
         else:
             b = self.lruConst.pop()
+
+        if b.pin:
+            raise RuntimeError(f"Attempting to evict pinned buffer: name {b.name}, key {b.key}, eph {b.ephemeral}")
+
         return b
 
 
@@ -296,7 +315,7 @@ class bufferCache():
     but it's really bad at keeping things consistent. Writing a real cache is a
     task for another day."""
 
-    def __init__(self, cap):
+    def __init__(self):
         """Initialize a device buffer cache with byte capacity cap. If this cap
         is exceeded, things will be evicted"""
         # Contains all bufs, on device or not
@@ -306,16 +325,29 @@ class bufferCache():
 
         self.policy = lruPolicy()
 
-        # Maximum number of bytes on the device
-        self.cap = cap
+        memFree, memAvail = cuda.mem_get_info()
 
-        # Current number of bytes on the device
-        self.size = 0
+        # Maximum number of bytes on the device
+        # We build in a bit of a margin because we can't track size very
+        # accurately. We assume we won't be off by more than this margin within
+        # a single request (this is just a guess).
+        self.cap = memAvail - 10*1024*1024
+
+        # Size represents the amount of memory used on the device, it's more
+        # complicated than just the sum of buffer sizes because of device
+        # memory overheads (e.g. cudaMalloc() uses a lot of device space)
+        self.size = memAvail - memFree
 
     def setKV(self, kv):
         self.kv = kv
 
+    def updateSize(self):
+        memFree, memAvail = cuda.mem_get_info()
+        self.size = memAvail - memFree
+
     def _makeRoom(self, buf):
+        #XXX
+        # print(f"\n\nADD BUF TO DEVICE cap: {self.cap}, size: {self.size}, new size: {buf.size}, onDevice?: {buf.onDevice}\n\n")
         if buf.onDevice:
             updateProf('n_devDHit', 1)
         else:
@@ -325,14 +357,16 @@ class bufferCache():
                     updateProf('n_devDEvict', 1)
                     # Pull from general pool first, only touch const if you have to
                     b = self.policy.pop()
-                    logging.debug("Evicting " + b.name)
+                    # logging.debug("Evicting " + b.name)
+                    #XXX
+                    logging.info(f"Evicting name:{b.name}, key: {b.key}, ephemeral?: {b.ephemeral}, cap: {self.cap}, size: {self.size}, amount freed: {b.size}")
 
                     if b.dirty:
                         updateProf('s_devDWriteBack', b.size())
                         b.toHost()
 
                     b.freeDevice()
-                    self.size -= b.size()
+                    self.size -= b.size
 
     def load(self, bSpec, overwrite=False):
         """Load a buffer onto the device, fetching from the KV store if
@@ -345,13 +379,13 @@ class bufferCache():
         if not bSpec.const and not bSpec.ephemeral:
             logging.debug("Invalidating: {}".format(bSpec.name))
             # Refetch even if we already have it
-            if bSpec.name in self.bufs:
-                self.drop(bSpec.name)
+            if bSpec.key in self.bufs:
+                self.drop(bSpec.key)
 
-        if bSpec.name in self.bufs:
+        if bSpec.key in self.bufs:
             logging.debug("Loading from Cache: {}".format(bSpec.name))
             updateProf('n_hostDHit', 1)
-            buf = self.bufs[bSpec.name]
+            buf = self.bufs[bSpec.key]
 
             if overwrite:
                 buf.clear()
@@ -366,7 +400,7 @@ class bufferCache():
                 buf = kaasBuf.fromSpec(bSpec)
 
                 if buf.ephemeral:
-                    self.ephemerals[bSpec.name] = buf
+                    self.ephemerals[bSpec.key] = buf
             else:
                 with ff.timer('t_hostDLoad', getProf(), final=False):
                     raw = self.kv.get(bSpec.key, profile=getProf(mod='kv'), profFinal=False)
@@ -379,17 +413,17 @@ class bufferCache():
                     buf = kaasBuf.fromSpec(bSpec, raw)
 
         self._makeRoom(buf)
-        buf.toDevice()
+        self.size += buf.toDevice()
 
-        self.bufs[bSpec.name] = buf
+        self.bufs[bSpec.key] = buf
         self.policy.push(buf)
 
         return buf
 
-    def dirty(self, name):
-        buf = self.bufs[name]
+    def dirty(self, key):
+        buf = self.bufs[key]
         buf.dirty = True
-        self.dirtyBufs[name] = buf
+        self.dirtyBufs[key] = buf
 
     def _flushOne(self, buf):
         if buf.dirty:
@@ -412,27 +446,29 @@ class bufferCache():
 
     def clearEphemerals(self):
         for b in list(self.ephemerals.values()):
-            self.drop(b.name)
+            self.drop(b.key)
 
         self.ephemerals = {}
 
-    def drop(self, name):
+    def drop(self, key):
         """Remove a buffer from the cache (writing back if dirty). This frees
         any device memory and drops references to the host buffer (Python's GC
         will pick it up eventually)."""
-        logging.debug("Dropping " + name)
-        buf = self.bufs[name]
+        logging.debug("Dropping " + str(key))
+        buf = self.bufs[key]
         self._flushOne(buf)
-        buf.freeDevice()
+
+        if buf.onDevice:
+            self.policy.remove(buf)
+            buf.freeDevice()
+            self.size -= buf.size
 
         if buf.dirty:
-            self.dirtyBufs.pop(name, None)
+            self.dirtyBufs.pop(buf.key, None)
         if buf.ephemeral:
-            self.ephemerals.pop(name, None)
+            self.ephemerals.pop(buf.key, None)
 
-        self.policy.remove(buf)
-
-        del self.bufs[name]
+        del self.bufs[buf.key]
 
 
 def kaasServeInternal(req, ctx):
@@ -446,12 +482,15 @@ def kaasServeInternal(req, ctx):
         kCache = kernelCache()
 
     if bCache is None:
-        # I think the device has 4GB
-        bCache = bufferCache(1024*1024*1024*4)
+        bCache = bufferCache()
 
     # This gets reset every call because libff only gives us the kv handle per
     # call and it could (in theory) change in some way between calls.
     bCache.setKV(ctx.kv)
+
+    # We can't estimate memory utilization perfectly so we update our estimate
+    # on every request
+    bCache.updateSize()
 
     global profs
     profs = ctx.stats
@@ -464,25 +503,44 @@ def kaasServeInternal(req, ctx):
         # Invoke() will catch the mistake if they don't.
         arguments = []
         for i in range(len(kSpec.arguments)):
+            arg = kSpec.arguments[i]
+
             if kSpec.type_list[i] == 'o':
-                arguments.append(bCache.load(kSpec.arguments[i], overwrite=True))
+                argBuf = bCache.load(arg, overwrite=True)
             else:
-                arguments.append(bCache.load(kSpec.arguments[i]))
+                argBuf = bCache.load(arg)
+
+            # Prevent buffers needed by the current request from being evicted
+            # This shouldn't happen anyway if LRU is working correctly.
+            argBuf.pin = True
+
+            arguments.append(argBuf)
 
         timer = kern.Invoke(kSpec.literals, arguments, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
         invokeTimes.append(timer)
+
+        # Enable the bCache to evict arguments if needed
+        for arg in arguments:
+            arg.pin = False
 
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.
         for o in kSpec.outputs:
             if not o.ephemeral:
-                bCache.dirty(o.name)
+                bCache.dirty(o.key)
 
         # Don't bother waiting for the caching policy on temps, they will for
         # sure never be needed again. In the future we may avoid this to save
         # on cudaMalloc.
         for t in kSpec.temps:
-            bCache.drop(t.name)
+            bCache.drop(t.key)
+
+        # For now, we assume we'll never re-use non-constant inputs. It's true
+        # for current workloads but not in general. This saves us a bunch of
+        # time spent evicting stuff.
+        for bSpec in kSpec.inputs:
+            if not bSpec.const:
+                bCache.drop(bSpec.key)
 
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.

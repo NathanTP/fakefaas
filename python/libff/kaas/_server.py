@@ -244,11 +244,6 @@ class kernelCache():
         pycuda.driver.init()
         self.cudaCtx = pycuda.tools.make_default_context()
 
-        #XXX
-        import os
-        print(f"\n\nNumber of Devices {cuda.Device.count()}, pid: {os.getpid()}, name: {self.cudaCtx.get_device().pci_bus_id()}\n\n")
-
-
     def get(self, spec):
         if spec.name not in self.kerns:
             updateProf('n_KMiss', 1)
@@ -446,9 +441,11 @@ class bufferCache():
 
     def clearEphemerals(self):
         for b in list(self.ephemerals.values()):
-            self.drop(b.key)
+            #XXX
+            # self.drop(b.key)
+            b.clear()
 
-        self.ephemerals = {}
+        # self.ephemerals = {}
 
     def drop(self, key):
         """Remove a buffer from the cache (writing back if dirty). This frees
@@ -529,18 +526,24 @@ def kaasServeInternal(req, ctx):
             if not o.ephemeral:
                 bCache.dirty(o.key)
 
+        # ***********************
+        # It turns out on the big models, cudaMM is dominant. We should measure
+        # it, but the overhead of extra evictions and stuff is unlikely to
+        # outweight the opportunity for buffer re-use. We just bzero stuff
+        # instead.
+        # ***********************
         # Don't bother waiting for the caching policy on temps, they will for
         # sure never be needed again. In the future we may avoid this to save
         # on cudaMalloc.
-        for t in kSpec.temps:
-            bCache.drop(t.key)
-
+        # for t in kSpec.temps:
+        #     bCache.drop(t.key)
+        #
         # For now, we assume we'll never re-use non-constant inputs. It's true
         # for current workloads but not in general. This saves us a bunch of
         # time spent evicting stuff.
-        for bSpec in kSpec.inputs:
-            if not bSpec.const:
-                bCache.drop(bSpec.key)
+        # for bSpec in kSpec.inputs:
+        #     if not bSpec.const:
+        #         bCache.drop(bSpec.key)
 
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.

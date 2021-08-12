@@ -490,7 +490,7 @@ def kaasServeInternal(req, ctx):
         for i in range(len(kSpec.arguments)):
             arg = kSpec.arguments[i]
 
-            if kSpec.type_list[i] == 'o' or arg.ephemeral:
+            if kSpec.type_list[i] == 'o':
                 argBuf = bCache.load(arg, overwrite=True)
             else:
                 argBuf = bCache.load(arg)
@@ -520,15 +520,15 @@ def kaasServeInternal(req, ctx):
         # outweight the opportunity for buffer re-use. We just bzero stuff
         # instead.
         # ***********************
-        # Don't bother waiting for the caching policy on temps, they will for
-        # sure never be needed again. In the future we may avoid this to save
-        # on cudaMalloc.
+        # # Don't bother waiting for the caching policy on temps, they will for
+        # # sure never be needed again. In the future we may avoid this to save
+        # # on cudaMalloc.
         # for t in kSpec.temps:
         #     bCache.drop(t.key)
         #
-        # For now, we assume we'll never re-use non-constant inputs. It's true
-        # for current workloads but not in general. This saves us a bunch of
-        # time spent evicting stuff.
+        # # For now, we assume we'll never re-use non-constant inputs. It's true
+        # # for current workloads but not in general. This saves us a bunch of
+        # # time spent evicting stuff.
         # for bSpec in kSpec.inputs:
         #     if not bSpec.const:
         #         bCache.drop(bSpec.key)

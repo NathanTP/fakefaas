@@ -1,1 +1,1 @@
-from .kaas import *
+from .kaas import *  # NOQA

@@ -341,8 +341,6 @@ class bufferCache():
         self.size = memAvail - memFree
 
     def _makeRoom(self, buf):
-        #XXX
-        # print(f"\n\nADD BUF TO DEVICE cap: {self.cap}, size: {self.size}, new size: {buf.size}, onDevice?: {buf.onDevice}\n\n")
         if buf.onDevice:
             updateProf('n_devDHit', 1)
         else:
@@ -352,9 +350,7 @@ class bufferCache():
                     updateProf('n_devDEvict', 1)
                     # Pull from general pool first, only touch const if you have to
                     b = self.policy.pop()
-                    # logging.debug("Evicting " + b.name)
-                    #XXX
-                    logging.info(f"Evicting name:{b.name}, key: {b.key}, ephemeral?: {b.ephemeral}, cap: {self.cap}, size: {self.size}, amount freed: {b.size}")
+                    logging.debug("Evicting " + b.name)
 
                     if b.dirty:
                         updateProf('s_devDWriteBack', b.size())
@@ -439,14 +435,6 @@ class bufferCache():
 
         self.dirtyBufs = {}
 
-    def clearEphemerals(self):
-        for b in list(self.ephemerals.values()):
-            #XXX
-            # self.drop(b.key)
-            b.clear()
-
-        # self.ephemerals = {}
-
     def drop(self, key):
         """Remove a buffer from the cache (writing back if dirty). This frees
         any device memory and drops references to the host buffer (Python's GC
@@ -502,7 +490,7 @@ def kaasServeInternal(req, ctx):
         for i in range(len(kSpec.arguments)):
             arg = kSpec.arguments[i]
 
-            if kSpec.type_list[i] == 'o':
+            if kSpec.type_list[i] == 'o' or arg.ephemeral:
                 argBuf = bCache.load(arg, overwrite=True)
             else:
                 argBuf = bCache.load(arg)
@@ -548,7 +536,6 @@ def kaasServeInternal(req, ctx):
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.
     bCache.flush()
-    bCache.clearEphemerals()
 
     if profLevel >= 1:
         for metric in eventMetrics1:

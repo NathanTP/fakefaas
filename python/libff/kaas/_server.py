@@ -354,24 +354,39 @@ class bufferCache():
         memFree, memAvail = cuda.mem_get_info()
         self.size = memAvail - memFree
 
-    def _makeRoom(self, buf):
-        if buf.onDevice:
-            updateProf('n_devDHit', 1)
-        else:
-            updateProf('n_devDMiss', 1)
-            with ff.timer('t_devDEvict', getProf(), final=False):
-                while self.cap - self.size < buf.size:
-                    updateProf('n_devDEvict', 1)
-                    # Pull from general pool first, only touch const if you have to
-                    b = self.policy.pop()
-                    logging.debug("Evicting " + b.name)
+    def makeRoom(self, sz):
+        while self.cap - self.size < sz:
+            updateProf('n_devDEvict', 1)
+            # Pull from general pool first, only touch const if you have to
+            b = self.policy.pop()
+            logging.debug("Evicting " + b.name)
 
-                    if b.dirty:
-                        updateProf('s_devDWriteBack', b.size())
-                        b.toHost()
+            if b.dirty:
+                updateProf('s_devDWriteBack', b.size())
+                b.toHost()
 
-                    b.freeDevice()
-                    self.size -= b.size
+            b.freeDevice()
+            self.size -= b.size
+
+    def makeRoomForBufs(self, bSpecs):
+        """Ensure that we have enough room to load all the buffers in bSpecs.
+        This accounts for if any of the buffers are already on the device. This
+        function helps performance and possibly memory fragmentation by
+        batching frees()."""
+        total = 0
+        for bSpec in bSpecs:
+            if bSpec.key in self.bufs:
+                if not self.bufs[bSpec.key].onDevice:
+                    updateProf('n_devDMiss', 1)
+                    total += bSpec.size
+                else:
+                    updateProf('n_devDHit', 1)
+            else:
+                updateProf('n_devDMiss', 1)
+                total += bSpec.size
+
+        with ff.timer('t_devDEvict', getProf(), final=False):
+            self.makeRoom(total)
 
     def load(self, bSpec, overwrite=False):
         """Load a buffer onto the device, fetching from the KV store if
@@ -417,7 +432,10 @@ class bufferCache():
                     updateProf('s_hostDLoad', bSpec.size)
                     buf = kaasBuf.fromSpec(bSpec, raw)
 
-        self._makeRoom(buf)
+        # This is mostly a safety check, we should have already made enough
+        # room
+        self.makeRoomForBufs([buf])
+
         self.size += buf.toDevice()
 
         self.bufs[bSpec.key] = buf
@@ -493,6 +511,16 @@ def kaasServeInternal(req, ctx):
 
     global profs
     profs = ctx.stats
+
+    # We try to help the cuda memory allocator out by freeing all the buffers
+    # at once instead of mixing frees and mallocs at a fine-grain. This loop
+    # finds all the unique buffers in the request
+    allBSpecs = {}
+    for kSpec in req.kernels:
+        for bSpec in kSpec.arguments:
+            allBSpecs[bSpec.key] = bSpec
+    bCache.makeRoomForBufs(allBSpecs.values())
+    cuda.Context.synchronize()
 
     invokeTimes = []
     for kSpec in req.kernels:

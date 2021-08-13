@@ -5,8 +5,10 @@
 # decisions will be different.
 
 import pathlib
+import os
 
 serverPackage = pathlib.Path(__file__).resolve().parent
+dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
 class KaasError(Exception):
@@ -96,6 +98,15 @@ class literalSpec():
         return {"type": self.t, "val": self.val}
 
 
+builtins = {
+    "cutlass": pathlib.Path(dir_path) / "cutlass" / "cutlass.cubin"
+}
+
+cutlassLib = {
+    "sgemm0": "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSD_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSE_Li0ENSF_INSG_ILi128ELi8EEELi256ELi1EEELi1EEENSK_ISP_fSE_Li0ESR_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSL_fSE_fSE_NSV_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS14_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2EEES1B_bEENS_8epilogue11threadblock8EpilogueIS7_S15_Li1ENS1E_22PredicatedTileIteratorINS1E_26OutputTileOptimalThreadMapINS1E_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1I_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfEENS1D_4warp20FragmentIteratorSimtISX_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSL_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S13_EENS1N_16TileIteratorSimtISX_S1U_fSE_S13_EENS1E_18SharedLoadIteratorINS1L_18CompactedThreadMapEfLi4EEENS1D_6thread17LinearCombinationIfLi1EffLNS21_9ScaleType4KindE0ELS1A_2EEENSB_ILi0ELi17EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE",
+    "sgemm1": "ReferenceGemm_kernel"
+}
+
 class kernelSpec():
     """Kernel specs describe a kernel for a particular request."""
     @classmethod
@@ -120,7 +131,10 @@ class kernelSpec():
     def __init__(self, library, kernel, gridDim, blockDim, sharedSize=0,
                  literals=[], arguments=[]):
         self.libPath = pathlib.Path(library).resolve()
-        self.kernel = kernel
+        if library == builtins["cutlass"]:
+            self.kernel = cutlassLib[kernel]
+        else:
+            self.kernel = kernel
         self.name = self.libPath.stem + "." + kernel
 
         self.gridDim = gridDim

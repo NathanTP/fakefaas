@@ -7,11 +7,14 @@ import numpy as np
 import collections
 import logging
 import atexit
+import os
 
 import libff as ff
 import libff.kv
 
 from . import kaas
+
+from . import cutlass
 
 # logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
@@ -27,6 +30,8 @@ profs = None
 
 kCache = None
 bCache = None
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
 def updateProf(name, val, level=1):
@@ -230,6 +235,11 @@ class kaasFunc():
 
         args = literalVals + dAddrs
 
+        if self.fName == "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSD_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSE_Li0ENSF_INSG_ILi128ELi8EEELi256ELi1EEELi1EEENSK_ISP_fSE_Li0ESR_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSL_fSE_fSE_NSV_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS14_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2EEES1B_bEENS_8epilogue11threadblock8EpilogueIS7_S15_Li1ENS1E_22PredicatedTileIteratorINS1E_26OutputTileOptimalThreadMapINS1E_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1I_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfEENS1D_4warp20FragmentIteratorSimtISX_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSL_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S13_EENS1N_16TileIteratorSimtISX_S1U_fSE_S13_EENS1E_18SharedLoadIteratorINS1L_18CompactedThreadMapEfLi4EEENS1D_6thread17LinearCombinationIfLi1EffLNS21_9ScaleType4KindE0ELS1A_2EEENSB_ILi0ELi17EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE":
+            params = cutlass.parseSgemmArgs(literalVals, dAddrs, kCache.cutlassAdapter)
+            self.func.prepare("320s")
+            return self.func.prepared_timed_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
+
         logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
                       ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
 
@@ -244,11 +254,15 @@ class kernelCache():
         pycuda.driver.init()
         self.cudaCtx = pycuda.tools.make_default_context()
 
+        self.cutlassAdapter = cutlass.loadCutlassSgemmAdapter()
+        # self.cutlassAdapter = loadAdapter()
+
     def get(self, spec):
         if spec.name not in self.kerns:
             updateProf('n_KMiss', 1)
             with ff.timer('t_kernelLoad', getProf(), final=False):
                 if spec.libPath not in self.libs:
+                    print(spec.libPath)
                     self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
 
                 nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)

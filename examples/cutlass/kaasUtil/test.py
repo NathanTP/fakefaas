@@ -2,6 +2,13 @@ import pycuda.driver as cuda
 import pycuda.autoinit  # NOQA
 import numpy as np
 import ctypes as ct
+import libff.kaas as kaas
+import libff.kv
+import libff.invoke
+import libff.kaas.kaasFF
+import libff as ff
+
+redisPwd = "Cd+OBWBEAXV0o2fg5yDrMjD9JUkW7J6MATWuGlRtkQXk/CBvf2HYEjKDYw4FC+eWPeVR8cQKWr7IztZy"
 
 
 def loadKerns():
@@ -57,6 +64,15 @@ def loadAdapter():
     return (getArg, getDims)
 
 
+def getCtx(remote=False):
+    if remote:
+        objStore = ff.kv.Redis(pwd=redisPwd, serialize=True)
+    else:
+        objStore = ff.kv.Local(copyObjs=False, serialize=False)
+
+    return libff.invoke.RemoteCtx(None, objStore)
+
+
 def testKern():
     """This kernel is useful for trying out ideas without all the complexity of
     cutlass"""
@@ -78,6 +94,46 @@ def testKern():
     arg = getStruct(anInt, ct.cast(int(dArr), ct.POINTER(ct.c_float)))
 
     kern.prepared_call((1, 1, 1), (1, 1, 1), arg.contents)
+
+
+def testSgemmKaas(M, N, K, alpha, beta):
+    lda = M
+    ldb = K
+    ldc = M
+
+    libffCtx = getCtx(remote=False)
+
+    rng = np.random.default_rng(0)
+    a = rng.random((M, K), dtype=np.float32)
+    b = rng.random((K, N), dtype=np.float32)
+    c = np.zeros(shape=(M, N), dtype=np.float32)
+
+    getArg, getDims = loadAdapter()
+
+    cfg = getDims(M, N, K).contents
+    grid = (cfg.gridX, cfg.gridY, cfg.gridZ)
+    block = (cfg.blockX, cfg.blockY, cfg.blockZ)
+
+    smem = cfg.smem_size
+
+    libffCtx.kv.put('a', a)
+    aBuf = kaas.bufferSpec('a', a.nbytes)
+
+    libffCtx.kv.put('b', b)
+    bBuf = kaas.bufferSpec('b', b.nbytes)
+
+    libffCtx.kv.put('c', c)
+    cBuf = kaas.bufferSpec('c', c.nbytes)
+    literals = [kaas.literalSpec('f', alpha), kaas.literalSpec('f', beta),
+                kaas.literalSpec('f', M), kaas.literalSpec('f', N), kaas.literalSpec('f', K), kaas.literalSpec('f', lda), kaas.literalSpec('f', ldb), kaas.literalSpec('f', ldc)]
+    firstKern = kaas.kernelSpec(kaas.builtins["cutlass"], "sgemm0", grid, block, sharedSize=smem, arguments=[(aBuf, 'i'), (bBuf, 'i'), (cBuf, 'o')], literals=literals)
+
+    req = kaas.kaasReq([firstKern])
+    kaasHandle = kaas.kaasFF.getHandle("direct", libffCtx)
+    kaasHandle.Invoke(req.toDict())
+
+    c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.float32)
+    print(c)
 
 
 def testSgemm(M, N, K, alpha, beta):
@@ -109,6 +165,8 @@ def testSgemm(M, N, K, alpha, beta):
     print("Grid is: ", grid)
     print("Block is: ", block)
     print("Smem Size is: ", cfg.smem_size)
+    import time
+    timeStart = time.time()
 
     params = getArg(M, N, K, alpha,
                     ct.cast(int(a_d), ct.POINTER(ct.c_float)), lda,
@@ -117,6 +175,8 @@ def testSgemm(M, N, K, alpha, beta):
                     ct.cast(int(c_d), ct.POINTER(ct.c_float)), ldc)
 
     cutlassKern.prepared_call(grid, block, params.contents, shared_size=cfg.smem_size)
+    cuda.Context.synchronize()
+    print(time.time() - timeStart)
 
     cuda.memcpy_dtoh(c, c_d)
 
@@ -132,11 +192,14 @@ def testSgemm(M, N, K, alpha, beta):
     print("Cutlass Kern Result: ")
     print(c)
 
-    print("Reference Kern Result:")
-    print(refC_h)
+    #print("Reference Kern Result:")
+    #print(refC_h)
 
+    a = np.reshape(a, (K, M), order='F')
+    b = np.reshape(b, (N, K), order='F')
     print("NP Result: ")
     print(np.matmul(a, b))
 
 
 testSgemm(128, 128, 128, 1.0, 0.0)
+#testSgemm(10000, 8000, 10000, 1.0, 0.0) #-> 1.12 seconds

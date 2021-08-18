@@ -19,6 +19,8 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 # Profiling level sets how aggressive we are in profiling.
 #   - 0 no profiling
 #   - 1 metrics that will have little effect on performance
+#   - 2 synchronize cuda aggresively to get accurate measurements (hurts e2e
+#       perf)
 profLevel = 1
 
 # This is a global reference to the current ff.profCollection (reset for each call)
@@ -26,6 +28,12 @@ profs = None
 
 kCache = None
 bCache = None
+
+
+def profSync():
+    """If required by the profiling level, synchronize the cuda context"""
+    if profLevel > 1:
+        cuda.Context.synchronize()
 
 
 def updateProf(name, val, level=1):
@@ -70,6 +78,9 @@ eventMetrics = [
     't_kernelLoad',
     't_cudaMM',
     't_hostMM']
+
+#XXX These are temporary metrics, may or may not remove them
+eventMetrics += ['t_makeRoom', 't_invokeExternal']
 
 # These metrics need to be handled with special cases
 metricSpecial = ['t_invoke']
@@ -145,15 +156,18 @@ class kaasBuf():
 
             with ff.timer('t_cudaMM', getProf(), final=False):
                 self.dbuf = cuda.mem_alloc(self.size)
+                profSync()
 
             if self.hbuf is None:
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
                 with ff.timer('t_zero', getProf(), final=False):
                     cuda.memset_d8(self.dbuf, 0, self.size)
+                    profSync()
 
             else:
                 with ff.timer('t_htod', getProf(), final=False):
                     cuda.memcpy_htod(self.dbuf, self.hbuf)
+                    profSync()
 
             self.onDevice = True
             return self.size
@@ -176,6 +190,7 @@ class kaasBuf():
             updateProf('s_dtoh', self.size)
             with ff.timer('t_dtoh', getProf(), final=False):
                 cuda.memcpy_dtoh(self.hbuf, self.dbuf)
+                profSync()
 
     def freeDevice(self):
         """Free any memory that is allocated on the device."""
@@ -184,6 +199,7 @@ class kaasBuf():
         else:
             with ff.timer('t_cudaMM', getProf(), final=False):
                 self.dbuf.free()
+                profSync()
             self.dbuf = None
             self.onDevice = False
 
@@ -192,6 +208,7 @@ class kaasBuf():
         with ff.timer('t_zero', getProf(), final=False):
             if self.onDevice:
                 cuda.memset_d8(self.dbuf, 0, self.size)
+                profSync()
                 self.hbuf = None
             else:
                 if self.hbuf is not None:
@@ -496,8 +513,8 @@ def kaasServeInternal(req, ctx):
     for kSpec in req.kernels:
         for bSpec in kSpec.arguments:
             allBSpecs[bSpec.key] = bSpec
-    bCache.makeRoomForBufs(allBSpecs.values())
-    cuda.Context.synchronize()
+    with ff.timer("t_makeRoom", profs, final=False):
+        bCache.makeRoomForBufs(allBSpecs.values())
 
     invokeTimes = []
     for kSpec in req.kernels:
@@ -520,7 +537,9 @@ def kaasServeInternal(req, ctx):
 
             arguments.append(argBuf)
 
-        timer = kern.Invoke(kSpec.literals, arguments, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+        with ff.timer("t_invokeExternal", profs, final=False):
+            timer = kern.Invoke(kSpec.literals, arguments, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+            profSync()
         invokeTimes.append(timer)
 
         # Enable the bCache to evict arguments if needed

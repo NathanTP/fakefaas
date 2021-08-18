@@ -19,8 +19,7 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 # Profiling level sets how aggressive we are in profiling.
 #   - 0 no profiling
 #   - 1 metrics that will have little effect on performance
-#   - 2 All metrics. This may have a performance impact, particularly for small kernels and/or data sizes.
-profLevel = 2
+profLevel = 1
 
 # This is a global reference to the current ff.profCollection (reset for each call)
 profs = None
@@ -49,33 +48,31 @@ def getProf(level=1, mod=None):
 
 # A list of all metrics that must be finalized after each invocation
 # n_* is an event count, s_* is a size metric in bytes, t_* is a time measurement in ms
-eventMetrics1 = [
-        'n_hostDMiss',
-        'n_hostDHit',
-        's_hostDLoad',
-        't_hostDLoad',
-        'n_hostDWriteBack',
-        't_hostDWriteBack',
-        'n_devDHit',
-        'n_devDMiss',
-        'n_devDEvict',
-        't_devDEvict',
-        's_devDWriteBack',
-        's_htod',
-        's_dtoh',
-        't_htod',
-        't_dtoh',
-        't_zero',
-        'n_KMiss',
-        'n_KHit',
-        't_kernelLoad',
-        't_cudaMM',
-        't_hostMM'
-        ]
+eventMetrics = [
+    'n_hostDMiss',
+    'n_hostDHit',
+    's_hostDLoad',
+    't_hostDLoad',
+    'n_hostDWriteBack',
+    't_hostDWriteBack',
+    'n_devDHit',
+    'n_devDMiss',
+    'n_devDEvict',
+    't_devDEvict',
+    's_devDWriteBack',
+    's_htod',
+    's_dtoh',
+    't_htod',
+    't_dtoh',
+    't_zero',
+    'n_KMiss',
+    'n_KHit',
+    't_kernelLoad',
+    't_cudaMM',
+    't_hostMM']
 
-eventMetrics2 = [
-        't_kernel'
-        ]
+# These metrics need to be handled with special cases
+metricSpecial = ['t_invoke']
 
 
 class kaasBuf():
@@ -382,12 +379,6 @@ class bufferCache():
         (you should probably make sure this doesn't happen by flushing when
         needed)."""
 
-        if not bSpec.const and not bSpec.ephemeral:
-            logging.debug("Invalidating: {}".format(bSpec.name))
-            # Refetch even if we already have it
-            if bSpec.key in self.bufs:
-                self.drop(bSpec.key)
-
         if bSpec.key in self.bufs:
             logging.debug("Loading from Cache: {}".format(bSpec.name))
             updateProf('n_hostDHit', 1)
@@ -566,7 +557,7 @@ def kaasServeInternal(req, ctx):
     bCache.flush()
 
     if profLevel >= 1:
-        for metric in eventMetrics1:
+        for metric in eventMetrics:
             profs[metric].increment()
         for p in profs.mod('kv').values():
             p.increment()
@@ -575,10 +566,6 @@ def kaasServeInternal(req, ctx):
         for t in invokeTimes:
             t_invoke += t()
         profs['t_invoke'].increment(t_invoke*1000)
-
-    if profLevel >= 2:
-        for metric in eventMetrics2:
-            profs[metric].increment()
 
     return {}
 

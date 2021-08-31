@@ -4,8 +4,8 @@ import ctypes as ct
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
-def loadCutlassSgemmAdapter():
-    libc = ct.cdll.LoadLibrary(str(dir_path) + "/cutlass/cutlass.so")
+def loadSgemmAdapter():
+    libc = ct.cdll.LoadLibrary(str(dir_path) + "/cutlass/cutlassAdapters.so")
     getArg = libc.adaptSGEMMArgs
     c_float_p = ct.POINTER(ct.c_float)
     getArg.argtypes = [ct.c_int, ct.c_int, ct.c_int, ct.c_float, c_float_p, ct.c_int,

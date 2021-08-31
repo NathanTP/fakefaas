@@ -8,7 +8,7 @@ else
 	COMPUTE_CAP:=35
 endif
 
-all: cutlass.so cutlass.cubin basic_gemm
+all: cutlassAdapters.so cutlass.cubin
 
 cutlassAdapters.so: cutlassAdapters.cu
 	/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler \
@@ -55,3 +55,5 @@ basic_gemm: basic_gemm.cu cutlassAdapters.so cutlass.cubin
 	-gencode=arch=compute_$(COMPUTE_CAP),code=sm_$(COMPUTE_CAP) -std=c++11 \
 	-x cu -o $@ $<
 
+clean:
+	rm -f basic_gemm cutlass.cubin cutlassAdapters.so

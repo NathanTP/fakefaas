@@ -275,7 +275,6 @@ class kernelCache():
             updateProf('n_KMiss', 1)
             with ff.timer('t_kernelLoad', getProf(), final=False):
                 if spec.libPath not in self.libs:
-                    print(spec.libPath)
                     self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
 
                 nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)

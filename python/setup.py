@@ -1,5 +1,7 @@
 import setuptools
 import shutil
+import subprocess as sp
+import pathlib
 
 VERSION = '0.0.1'
 
@@ -11,6 +13,8 @@ if shutil.which('nvcc') is not None:
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
+
+sp.run(['make'], cwd=pathlib.Path(__file__).parent / 'libff/kaas/cutlass', check=True)
 
 setuptools.setup(
     name="libff",

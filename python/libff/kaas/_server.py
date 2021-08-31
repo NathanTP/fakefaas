@@ -267,7 +267,7 @@ class kernelCache():
         pycuda.driver.init()
         self.cudaCtx = pycuda.tools.make_default_context()
 
-        self.cutlassAdapter = cutlass.loadCutlassSgemmAdapter()
+        self.cutlassAdapter = cutlass.loadSgemmAdapter()
         # self.cutlassAdapter = loadAdapter()
 
     def get(self, spec):

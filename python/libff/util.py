@@ -64,6 +64,9 @@ class profCollection(collections.abc.MutableMapping):
             self.profs[key] = prof()
         return self.profs[key]
 
+    def __contains__(self, key):
+        return key in self.profs
+
     def __setitem__(self, key, value):
         self.profs[key] = value
 

@@ -2,6 +2,7 @@ import pathlib
 import math
 import sys
 import subprocess as sp
+from pprint import pprint
 
 import libff as ff
 import libff.kv
@@ -25,12 +26,10 @@ def getCtx(remote=False):
     return libff.invoke.RemoteCtx(None, objStore)
 
 
-def testDoublify(mode='direct'):
-    stats = ff.util.profCollection()
-    libffCtx = getCtx(remote=(mode == 'process'))
-    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx, stats=stats)
+def runDoublify(kaasHandle, libffCtx, testArray=None):
+    if testArray is None:
+        testArray = np.random.randn(16).astype(np.float32)
 
-    testArray = np.random.randn(16).astype(np.float32)
     origArray = testArray.copy()
 
     libffCtx.kv.put("input", testArray)
@@ -54,6 +53,46 @@ def testDoublify(mode='direct'):
 
     libffCtx.kv.delete("input")
 
+    return (doubledArray, origArray)
+
+
+def testStats(mode='direct'):
+    stats = ff.util.profCollection()
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx, stats=stats)
+
+    runDoublify(kaasHandle, libffCtx)
+
+    kStats = kaasHandle.getStats()
+
+    # This is supposed to update the original stats object directly. The
+    # returned reference is just for convenience or if you didn't pass in a
+    # pre-existing stats object
+    if kStats is not stats:
+        print("FAIL: getStats returned a new object.")
+        pprint(kStats.report())
+        return
+
+    if 't_init' not in stats:
+        print("FAIL: didn't receive any stats from RemoteFunc")
+        pprint(kStats.report())
+        return
+
+    if 't_zero' not in stats.mod('worker'):
+        print("FAIL: didn't receive any stats from KaaS server")
+        pprint(kStats.report())
+        return
+
+    print("PASS")
+
+
+def testDoublify(mode='direct'):
+    stats = ff.util.profCollection()
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx, stats=stats)
+
+    doubledArray, origArray = runDoublify(kaasHandle, libffCtx)
+
     expect = origArray*2
     if not np.array_equal(doubledArray, expect):
         print("FAIL")
@@ -64,8 +103,6 @@ def testDoublify(mode='direct'):
     else:
         print("PASS")
 
-    print("Stats: ")
-    print(kaasHandle.getStats())
     kaasHandle.Close()
 
 
@@ -259,13 +296,13 @@ if __name__ == "__main__":
         sp.call(["make"], cwd=(testPath / 'kerns'))
         print("libkaasMicro.cubin built sucessefully\n")
 
-    print("Rekey:")
-    with ff.testenv('simple', mode):
-        testRekey(mode)
-
     print("Double Test:")
     with ff.testenv('simple', mode):
         testDoublify(mode)
+
+    print("Stats Test:")
+    with ff.testenv('simple', mode):
+        testStats(mode)
 
     print("Dot Product Test:")
     with ff.testenv('simple', mode):
@@ -274,3 +311,7 @@ if __name__ == "__main__":
     print("MatMul Test")
     with ff.testenv('simple', mode):
         testMatMul(mode)
+
+    print("Rekey:")
+    with ff.testenv('simple', mode):
+        testRekey(mode)

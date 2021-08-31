@@ -79,7 +79,6 @@ eventMetrics = [
     't_cudaMM',
     't_hostMM']
 
-#XXX These are temporary metrics, may or may not remove them
 eventMetrics += ['t_makeRoom', 't_invokeExternal']
 
 # These metrics need to be handled with special cases

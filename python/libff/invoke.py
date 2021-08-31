@@ -139,7 +139,7 @@ class DirectRemoteFunc(RemoteFunc):
             self.packagePath = packagePath
 
         # The profs in ctx are used only for passing to the function,
-        # self.stats is for the client-side RemoteFun
+        # self.stats is for the client-side RemoteFunc
         self.ctx = copy.copy(context)
         if stats is None:
             self.stats = util.profCollection()
@@ -187,7 +187,7 @@ class DirectRemoteFunc(RemoteFunc):
             if self.fName not in self.funcs:
                 raise RuntimeError("Function '" + self.fName + "' not registered")
 
-            self.ctx.profs = self.stats.mod('worker')
+            self.ctx.stats = self.stats.mod('worker')
             return self.funcs[self.fName](arg, self.ctx)
 
     def getStats(self):

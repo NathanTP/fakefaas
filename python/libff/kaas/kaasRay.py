@@ -1,3 +1,4 @@
+import libff as ff
 import libff.invoke
 from . import _server
 
@@ -39,7 +40,8 @@ def kaasServeRay(req, stats=None):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
     # kReq = kaas.kaasReq.fromDict(req)
-    _server.kaasServeInternal(req, ctx)
+    with ff.timer('t_e2e', stats):
+        _server.kaasServeInternal(req, ctx)
 
     # Returns is an ordered list of output ray references
     returns = []

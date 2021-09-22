@@ -210,13 +210,10 @@ class kaasBuf():
     def clear(self):
         logging.debug("Clearing existing buffer " + self.name)
         with ff.timer('t_zero', getProf(), final=False):
+            self.hbuf = None
             if self.onDevice:
                 cuda.memset_d8(self.dbuf, 0, self.size)
                 profSync()
-                self.hbuf = None
-            else:
-                if self.hbuf is not None:
-                    ctypes.memset(self.hbuf, 0, self.size)
 
 
 class kaasFunc():
@@ -402,11 +399,10 @@ class bufferCache():
 
     def load(self, bSpec, overwrite=False):
         """Load a buffer onto the device, fetching from the KV store if
-        necessary. If overwrite=True, a new buffer will be created and any
-        existing value in the KV store will be overwritten. If the buffer is
-        already in the cache and dirty, it will be written back and re-read
-        (you should probably make sure this doesn't happen by flushing when
-        needed)."""
+        necessary. If overwrite=True, a new buffer will be created. If the
+        buffer is already in the cache and dirty, it will be written back and
+        re-read (you should probably make sure this doesn't happen by flushing
+        when needed)."""
 
         if bSpec.key in self.bufs:
             logging.debug("Loading from Cache: {}".format(bSpec.name))

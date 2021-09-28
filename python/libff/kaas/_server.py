@@ -250,6 +250,7 @@ class kaasFunc():
             self.func.prepare("320s")
             return self.func.prepared_timed_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
 
+        #XXX there's no logging for cutlasss one
         logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
                       ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
 
@@ -265,7 +266,6 @@ class kernelCache():
         self.cudaCtx = pycuda.tools.make_default_context()
 
         self.cutlassAdapter = cutlass.loadSgemmAdapter()
-        # self.cutlassAdapter = loadAdapter()
 
     def get(self, spec):
         if spec.name not in self.kerns:
@@ -517,12 +517,14 @@ def kaasServeInternal(req, ctx):
     # We try to help the cuda memory allocator out by freeing all the buffers
     # at once instead of mixing frees and mallocs at a fine-grain. This loop
     # finds all the unique buffers in the request
-    allBSpecs = {}
-    for kSpec in req.kernels:
-        for bSpec in kSpec.arguments:
-            allBSpecs[bSpec.key] = bSpec
     with ff.timer("t_makeRoom", profs, final=False):
-        bCache.makeRoomForBufs(allBSpecs.values())
+        bCache.makeRoomForBufs(req.bufferMap.values())
+    # allBSpecs = {}
+    # for kSpec in req.kernels:
+    #     for bSpec in kSpec.arguments:
+    #         allBSpecs[bSpec.key] = bSpec
+    # with ff.timer("t_makeRoom", profs, final=False):
+    #     bCache.makeRoomForBufs(allBSpecs.values())
 
     invokeTimes = []
     for kSpec in req.kernels:
@@ -531,35 +533,40 @@ def kaasServeInternal(req, ctx):
         # The user should ensure that all buffers will fit on the device.
         # Invoke() will catch the mistake if they don't.
         arguments = []
-        for i in range(len(kSpec.arguments)):
-            arg = kSpec.arguments[i]
-
-            if kSpec.type_list[i] == 'o':
-                argBuf = bCache.load(arg, overwrite=True)
+        for argName in kSpec.arguments:
+            arg = req.bufferMap[argName]
+            if arg.iotype == 'o':
+                arguments.append(bCache.load(arg, overwrite=True))
+                if not arg.ephemeral:
+                    bCache.dirty(arg.key)
             else:
-                argBuf = bCache.load(arg)
+                arguments.append(bCache.load(arg, overwrite=False))
 
-            # Prevent buffers needed by the current request from being evicted
-            # This shouldn't happen anyway if LRU is working correctly.
-            argBuf.pin = True
-
-            arguments.append(argBuf)
+        # for i in range(len(kSpec.arguments)):
+        #     arg = kSpec.arguments[i]
+        #
+        #     if kSpec.type_list[i] == 'o':
+        #         argBuf = bCache.load(arg, overwrite=True)
+        #     else:
+        #         argBuf = bCache.load(arg)
+        #
+        #     # Prevent buffers needed by the current request from being evicted
+        #     # This shouldn't happen anyway if LRU is working correctly.
+        #     argBuf.pin = True
+        #
+        #     arguments.append(argBuf)
 
         with ff.timer("t_invokeExternal", profs, final=False):
             timer = kern.Invoke(kSpec.literals, arguments, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
             profSync()
         invokeTimes.append(timer)
 
-        # Enable the bCache to evict arguments if needed
-        for arg in arguments:
-            arg.pin = False
-
         # Inform the bCache that the output buffers are dirty and need to be
         # committed on eviction.
-        for o in kSpec.outputs:
-            if not o.ephemeral:
-                bCache.dirty(o.key)
-
+        # for o in kSpec.outputs:
+        #     if not o.ephemeral:
+        #         bCache.dirty(o.key)
+        #
         # ***********************
         # It turns out on the big models, cudaMM is dominant. We should measure
         # it, but the overhead of extra evictions and stuff is unlikely to

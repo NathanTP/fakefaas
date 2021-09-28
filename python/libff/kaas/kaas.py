@@ -5,6 +5,7 @@
 # decisions will be different.
 
 import pathlib
+import collections
 import os
 
 serverPackage = pathlib.Path(__file__).resolve().parent
@@ -96,6 +97,9 @@ class literalSpec():
 
     def toDict(self):
         return {"type": self.t, "val": self.val}
+
+    def __str__(self):
+        return f"Literal {self.t} {self.val}"
 
 
 builtins = {
@@ -208,3 +212,45 @@ class kaasReq():
 
     def toDict(self):
         return {"kernels": [k.toDict() for k in self.kernels]}
+
+
+denseBuf = collections.namedtuple("denseBuf",
+                                  ['name', 'size', 'key', 'ephemeral', 'const', 'iotype'])
+
+denseLiteral = collections.namedtuple("denseLiteral", ['type', 'val'])
+
+denseKern = collections.namedtuple("denseKern",
+                                   ['library', 'kernel', 'gridDim', 'blockDim',
+                                    'sharedSize', 'literals', 'arguments'])
+#XXX
+# need: name, libPath, arguments, inputs, temps, uniqueOutputs, literals, kernel, gridDim,
+# blockDim, sharedSize
+# I think we only actually need to know the number of buffers (being careful
+# not to double-count input/output buffers)
+
+class kaasReqDense():
+    @classmethod
+    def fromDict(cls, d):
+        kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
+        return cls(kernels)
+
+    def __init__(self, kernels):
+        self.bufferMap = {}
+        self.kernels = []
+        for kern in kernels:
+            arguments = []
+            for buf in kern.arguments:
+                if buf.name not in self.bufferMap:
+                    self.bufferMap[buf.name] = denseBuf(buf.name, buf.size, buf.key, buf.ephemeral, buf.const, buf.iotype)
+                arguments.append(buf.name)
+
+            literals = [denseLiteral(literal.t, literal.val) for literal in kern.literals]
+            dKern = denseKern(kern.library, kern.kernel, kern.gridDim,
+                              kern.blockDim, kern.sharedSize, literals,
+                              arguments)
+
+            self.kernels.append(dKern)
+
+    def reKey(self, keyMap):
+        for name, newKey in keyMap.items():
+            self.bufferMap[name].key = newKey

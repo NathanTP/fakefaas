@@ -108,6 +108,10 @@ def testSgemmKaas(M, N, K, alpha, beta):
     b = rng.random((K, N), dtype=np.float32)
     c = np.zeros(shape=(M, N), dtype=np.float32)
 
+    a = np.asfortranarray(a)
+    b = np.asfortranarray(b)
+
+
     getArg, getDims = loadAdapter()
 
     cfg = getDims(M, N, K).contents
@@ -145,9 +149,21 @@ def testSgemm(M, N, K, alpha, beta):
     refKern, cutlassKern = loadKerns()
 
     rng = np.random.default_rng(0)
-    a = rng.random((M, K), dtype=np.float32)
-    b = rng.random((K, N), dtype=np.float32)
-    c = np.zeros(shape=(M, N), dtype=np.float32)
+    a_prime = rng.random((M, K), dtype=np.float32)
+    b_prime = rng.random((K, N), dtype=np.float32)
+    #c = np.zeros(shape=(M, N), dtype=np.float32)
+    c = np.zeros(shape=(M, N), order='F', dtype=np.float32)
+
+    #print(np.matmul(a_prime, b_prime))
+
+    # need to re-organize in fortran ordering
+    a = np.asfortranarray(a_prime)
+    b = np.asfortranarray(b_prime)
+    #a = a_prime
+    #b = b_prime
+
+    #print(a)
+    #print(b)
 
     a_d = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_d, a)
@@ -162,9 +178,9 @@ def testSgemm(M, N, K, alpha, beta):
     grid = (cfg.gridX, cfg.gridY, cfg.gridZ)
     block = (cfg.blockX, cfg.blockY, cfg.blockZ)
 
-    print("Grid is: ", grid)
-    print("Block is: ", block)
-    print("Smem Size is: ", cfg.smem_size)
+    #print("Grid is: ", grid)
+    #print("Block is: ", block)
+    #print("Smem Size is: ", cfg.smem_size)
     import time
     timeStart = time.time()
 
@@ -176,30 +192,39 @@ def testSgemm(M, N, K, alpha, beta):
 
     cutlassKern.prepared_call(grid, block, params.contents, shared_size=cfg.smem_size)
     cuda.Context.synchronize()
-    print(time.time() - timeStart)
+    #print(time.time() - timeStart)
 
     cuda.memcpy_dtoh(c, c_d)
 
-    refC_d = cuda.mem_alloc(c.nbytes)
+    #refC_d = cuda.mem_alloc(c.nbytes)
 
-    refBlock = (16, 16, 1)
-    refGrid = (((M + 16 - 1) // 16), ((N + 16 - 1) // 16), 1)
-    refKern.prepared_call(refBlock, refGrid, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
+    #refBlock = (16, 16, 1)
+    #refGrid = (((M + 16 - 1) // 16), ((N + 16 - 1) // 16), 1)
+    #refKern.prepared_call(refBlock, refGrid, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
 
-    refC_h = np.zeros(shape=(M, N), dtype=np.float32)
-    cuda.memcpy_dtoh(refC_h, refC_d)
+    #refC_h = np.zeros(shape=(M, N), dtype=np.float32)
+    #cuda.memcpy_dtoh(refC_h, refC_d)
 
     print("Cutlass Kern Result: ")
+    print(type(c))
     print(c)
 
     #print("Reference Kern Result:")
     #print(refC_h)
 
-    a = np.reshape(a, (K, M), order='F')
-    b = np.reshape(b, (N, K), order='F')
+    #a = np.reshape(a, (K, M), order='C')
+    #b = np.reshape(b, (N, K), order='C')
+    #print(a.dtype)
+    #print(type(a))
+
+    #print(a)
+    #print(b)
     print("NP Result: ")
-    print(np.matmul(a, b))
+    C = np.matmul(a, b)
+    #print(alpha)
+    print(C)
+    #print(alpha * C)
 
-
-testSgemm(128, 128, 128, 1.0, 0.0)
+testSgemmKaas(10, 2, 2, 1.0, 0.0)
+testSgemm(10, 2, 2, 1.0, 1.0)
 #testSgemm(10000, 8000, 10000, 1.0, 0.0) #-> 1.12 seconds

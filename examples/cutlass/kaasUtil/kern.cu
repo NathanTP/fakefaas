@@ -8,14 +8,14 @@
 // }
 #include "cutlass/gemm/device/gemm.h"
 
-using ColumnMajor = cutlass::layout::ColumnMajor;
+//using ColumnMajor = cutlass::layout::ColumnMajor;
 
-using CutlassGemm = cutlass::gemm::device::Gemm<float,
-                                                ColumnMajor,
-                                                float,
-                                                ColumnMajor,
-                                                float,
-                                                ColumnMajor>;
+//using CutlassGemm = cutlass::gemm::device::Gemm<float,
+//                                                ColumnMajor,
+//                                                float,
+//                                                ColumnMajor,
+//                                                float,
+//                                                ColumnMajor>;
 
 // This is a template kernel
 extern "C" {

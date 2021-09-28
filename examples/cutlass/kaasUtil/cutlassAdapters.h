@@ -5,14 +5,14 @@
 #include <stdio.h>
 #include "cutlass/gemm/device/gemm.h"
 
-using ColumnMajor = cutlass::layout::ColumnMajor;
-
+//using ColumnMajor = cutlass::layout::ColumnMajor;
+using RowMajor = cutlass::layout::RowMajor;
 using CutlassGemm = cutlass::gemm::device::Gemm<float,        // Data-type of A matrix
-                                                ColumnMajor,  // Layout of A matrix
+                                                RowMajor,  // Layout of A matrix
                                                 float,        // Data-type of B matrix
-                                                ColumnMajor,  // Layout of B matrix
+                                                RowMajor,  // Layout of B matrix
                                                 float,        // Data-type of C matrix
-                                                ColumnMajor>; // Layout of C matrix
+                                                RowMajor>; // Layout of C matrix
 
 typedef struct CudaConfig {
     int gridX;

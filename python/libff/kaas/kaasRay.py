@@ -39,16 +39,12 @@ def kaasServeRay(req, stats=None):
     the request)"""
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
-    # kReq = kaas.kaasReq.fromDict(req)
     with ff.timer('t_e2e', stats):
-        _server.kaasServeInternal(req, ctx)
+        visibleOutputs = _server.kaasServeInternal(req, ctx)
 
-    # Returns is an ordered list of output ray references
     returns = []
-    for kern in req.kernels:
-        for out in kern.outputs:
-            if not out.ephemeral:
-                returns.append(ctx.kv.newRefs[out.key])
+    for outKey in visibleOutputs:
+        returns.append(ctx.kv.newRefs[outKey])
 
     # This is a ray weirdness. If you return multiple values in a tuple, it's
     # returned as multiple independent references, if you return a tuple of length

@@ -248,8 +248,6 @@ class kaasReqDense():
                     self.bufferMap[buf.name] = (buf.name, buf.size, buf.key, buf.ephemeral, buf.const)
                 arguments.append(buf.name)
 
-            # isOutputList = [(iotype == 'o' or iotype == 'io') for iotype in kern.type_list]
-
             literals = [(literal.t, literal.val) for literal in kern.literals]
             dKern = (kern.name, str(kern.libPath), kern.kernel,
                      kern.gridDim, kern.blockDim, kern.sharedSize,

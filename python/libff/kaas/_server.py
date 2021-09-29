@@ -530,6 +530,7 @@ def kaasServeInternal(req, ctx):
         bCache.makeRoomForBufs(req.bufferMap.values())
 
     invokeTimes = []
+    visibleOutputs = []
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)
 
@@ -544,8 +545,9 @@ def kaasServeInternal(req, ctx):
             else:
                 argBuf = bCache.load(arg)
 
-            if ioType == 'o' or ioType == 'io':
+            if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                 bCache.dirty(argBuf.key)
+                visibleOutputs.append(argBuf.key)
 
             arguments.append(argBuf)
 
@@ -588,7 +590,7 @@ def kaasServeInternal(req, ctx):
             t_invoke += t()
         profs['t_invoke'].increment(t_invoke*1000)
 
-    return {}
+    return visibleOutputs
 
 
 @atexit.register

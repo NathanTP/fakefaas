@@ -16,10 +16,10 @@ def getHandle(mode, ctx, stats=None):
 
 def kaasServeLibff(req, ctx):
     # Convert the dictionary req into a kaasReq object
-    kReq = kaas.kaasReq.fromDict(req)
+    # kReq = kaas.kaasReq.fromDict(req)
 
     with ff.timer("t_e2e", ctx.stats):
-        kaasServeInternal(kReq, ctx)
+        kaasServeInternal(req, ctx)
 
 
 def LibffInvokeRegister():

@@ -4,6 +4,9 @@ import sys
 import subprocess as sp
 from pprint import pprint
 
+import time
+import pickle
+
 import libff as ff
 import libff.kv
 import libff.invoke
@@ -42,11 +45,11 @@ def runDoublify(kaasHandle, libffCtx, testArray=None):
                            (1, 1), (16, 1, 1),
                            arguments=arguments)
 
-    req = kaas.kaasReq([kern])
+    req = kaas.kaasReqDense([kern])
 
     # This is just for the test, a real system would use libff to invoke the
     # kaas server
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
 
     doubledBytes = libffCtx.kv.get('input')
     doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
@@ -129,7 +132,7 @@ def getDotProdReq(nElem):
                               (1, 1), (nElem // 2, 1, 1),
                               arguments=args_sum)
 
-    return kaas.kaasReq([prodKern, sumKern])
+    return kaas.kaasReqDense([prodKern, sumKern])
 
 
 def testDotProd(mode='direct'):
@@ -147,7 +150,7 @@ def testDotProd(mode='direct'):
 
     req = getDotProdReq(nElem)
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     kaasHandle.Close()
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
@@ -179,7 +182,7 @@ def testRekey(mode='direct'):
 
     req = getDotProdReq(nElem)
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
 
@@ -189,7 +192,7 @@ def testRekey(mode='direct'):
     libffCtx.kv.put('bNew',   bNew)
 
     req.reKey({'inpA': 'aNew', 'inpB': 'bNew', 'output': "cNew"})
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     c2 = np.frombuffer(libffCtx.kv.get('cNew'), dtype=np.uint32)[0]
 
     expect1 = np.dot(aArr, bArr)
@@ -250,9 +253,9 @@ def testMatMul(mode='direct'):
                            gridDim, blockDim, sharedSize=sharedSize,
                            arguments=args)
 
-    req = kaas.kaasReq([kern])
+    req = kaas.kaasReqDense([kern])
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     kaasHandle.Close()
 
     cRaw = libffCtx.kv.get('C')
@@ -282,6 +285,65 @@ def testMatMul(mode='direct'):
         print(npArr)
     else:
         print("PASS")
+
+
+def bigReq():
+    nByte = 128
+
+    kerns = []
+    lastOut = kaas.bufferSpec('inpFirst', nByte)
+    for i in range(1000):
+        inBuf = lastOut
+        constBuf = kaas.bufferSpec('const' + str(i), nByte)
+        outBuf = kaas.bufferSpec('out' + str(i), nByte)
+
+        prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                   'prodKern',
+                                   (1, 1), (nByte / 4, 1, 1),
+                                   literals=[kaas.literalSpec('Q', nByte / 4)],
+                                   arguments=[(inBuf, 'i'), (constBuf, 'i'), (outBuf, 'o')])
+
+        kerns.append(prodKern)
+        lastOut = outBuf
+
+    keyMap = {}
+    keyMap['inpFirst'] = 'rekeyedInpFirst'
+    for i in range(1000):
+        keyMap['out' + str(i)] = 'reKeyedOut' + str(i)
+
+    fullReq = kaas.kaasReq(kerns)
+    denseReq = kaas.kaasReqDense(kerns)
+
+    start = time.time()
+    total = 0
+    for kern in denseReq.kernels:
+        kern = kaas.denseKern(*kern[:-1])
+        total += len(kern[0])
+    print("parsing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReqSer = pickle.dumps(fullReq)
+    print("Serializing full took: ", time.time() - start)
+
+    start = time.time()
+    denseReqSer = pickle.dumps(denseReq)
+    print("Serializing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReqSer = pickle.loads(fullReqSer)
+    print("Deserializing full took: ", time.time() - start)
+
+    start = time.time()
+    denseReqDes = pickle.loads(denseReqSer)
+    print("Deserializing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReq.reKey(keyMap)
+    print("Reykeying full took: ", time.time() - start)
+
+    start = time.time()
+    denseReq.reKey(keyMap)
+    print("Reykeying dense took: ", time.time() - start)
 
 
 if __name__ == "__main__":

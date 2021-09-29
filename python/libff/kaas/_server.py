@@ -93,10 +93,10 @@ metricSpecial = ['t_invoke']
 class kaasBuf():
     @classmethod
     def fromSpec(cls, spec, src=None):
-        return cls(spec.name, spec.key, src,
-                   size=spec.size, const=spec.const, ephemeral=spec.ephemeral)
+        return cls(spec[0], spec[2], src,
+                   size=spec[1], ephemeral=spec[3])
 
-    def __init__(self, name, key, src, size=None, const=False, ephemeral=False):
+    def __init__(self, name, key, src, size=None, ephemeral=False):
         """A kaasBuffer represnts a binary data buffer managed by the kaas
         system, it can be either on the device or on the host. If src is
         provided, it will be used as the buffer, otherwise size will be used to
@@ -107,13 +107,8 @@ class kaasBuf():
         self.name = name
         self.key = key
         self.dirty = False
-        self.const = const
         self.ephemeral = ephemeral
-
-        # Pinned buffers cannot be evicted, this is mostly a safety check since
-        # the eviction policy would only evict important buffers if a single
-        # request doesn't fit in memory.
-        self.pin = False
+        self.useCount = 0
 
         if src is not None:
             self.dbuf = None
@@ -130,8 +125,8 @@ class kaasBuf():
         return self.name
 
     def __repr__(self):
-        return "KaaS Buffer (name={}, key={}, dirty={}, const={}, ephemeral={}, onDevice={}, size={})".format(
-                self.name, self.key, self.dirty, self.const, self.ephemeral, self.onDevice, self.size)
+        return "KaaS Buffer (name={}, key={}, dirty={}, ephemeral={}, onDevice={}, size={})".format(
+                self.name, self.key, self.dirty, self.ephemeral, self.onDevice, self.size)
 
     def setHostBuffer(self, newBuf):
         """Allows changing the host-side memory allocated to this buffer. This
@@ -155,13 +150,13 @@ class kaasBuf():
         if self.onDevice:
             return 0
         else:
-            logging.debug("Moving {} to device".format(self.name))
             updateProf('s_htod', self.size)
 
             with ff.timer('t_cudaMM', getProf(), final=False):
                 self.dbuf = cuda.mem_alloc(self.size)
                 profSync()
 
+            logging.debug(f"Moving {self.size}B from host buffer '{self.name}' to device address 0x{hex(int(self.dbuf))}")
             if self.hbuf is None:
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
                 with ff.timer('t_zero', getProf(), final=False):
@@ -184,7 +179,7 @@ class kaasBuf():
         if not self.onDevice:
             return
         else:
-            logging.debug("Moving {}b from device (0x{}) {} to host".format(
+            logging.debug("Moving {}B from device (0x{}) {} to host".format(
                 self.size, hex(int(self.dbuf)), self.name))
 
             if self.hbuf is None:
@@ -234,7 +229,7 @@ class kaasFunc():
               after invocation
         """
 
-        literalVals = [lit.val for lit in literals]
+        literalVals = [lit[1] for lit in literals]
 
         dAddrs = []
         for b in bufs:
@@ -268,19 +263,23 @@ class kernelCache():
         self.cutlassAdapter = cutlass.loadSgemmAdapter()
 
     def get(self, spec):
-        if spec.name not in self.kerns:
+        name = spec[0]
+        libPath = spec[1]
+        args = spec[7]
+        literals = spec[6]
+        kernelFunc = spec[2]
+        if name not in self.kerns:
             updateProf('n_KMiss', 1)
             with ff.timer('t_kernelLoad', getProf(), final=False):
-                if spec.libPath not in self.libs:
-                    self.libs[spec.libPath] = cuda.module_from_file(str(spec.libPath))
+                if libPath not in self.libs:
+                    self.libs[libPath] = cuda.module_from_file(libPath)
 
-                nBuf = len(spec.inputs) + len(spec.temps) + len(spec.uniqueOutputs)
-                litTypes = [lit.t for lit in spec.literals]
-                self.kerns[spec.name] = kaasFunc(self.libs[spec.libPath], spec.kernel, litTypes, nBuf)
+                litTypes = [lit[0] for lit in literals]
+                self.kerns[name] = kaasFunc(self.libs[libPath], kernelFunc, litTypes, len(args))
         else:
             updateProf('n_KHit', 1)
 
-        return self.kerns[spec.name]
+        return self.kerns[name]
 
 
 class lruPolicy():
@@ -292,14 +291,14 @@ class lruPolicy():
 
     def remove(self, buf):
         """Remove buffer from consideration"""
-        if buf.const:
+        if buf.useCount > 1:
             self.lruConst.remove(buf)
         else:
             self.lruOther.remove(buf)
 
     def push(self, buf):
         """Place buffer in the most-recently-used slot"""
-        if buf.const:
+        if buf.useCount > 1:
             self.lruConst.appendleft(buf)
         else:
             self.lruOther.appendleft(buf)
@@ -366,7 +365,6 @@ class bufferCache():
     def makeRoom(self, sz):
         while self.cap - self.size < sz:
             updateProf('n_devDEvict', 1)
-            # Pull from general pool first, only touch const if you have to
             b = self.policy.pop()
             logging.debug("Evicting " + b.name)
 
@@ -384,15 +382,18 @@ class bufferCache():
         batching frees()."""
         total = 0
         for bSpec in bSpecs:
-            if bSpec.key in self.bufs:
-                if not self.bufs[bSpec.key].onDevice:
-                    updateProf('n_devDMiss', 1)
-                    total += bSpec.size
-                else:
-                    updateProf('n_devDHit', 1)
-            else:
+            key = bSpec[2]
+            size = bSpec[1]
+            cacheBuf = self.bufs.get(key, None)
+            if cacheBuf is None:
                 updateProf('n_devDMiss', 1)
-                total += bSpec.size
+                total += size
+            else:
+                if cacheBuf.onDevice:
+                    updateProf('n_devDHit', 1)
+                else:
+                    updateProf('n_devDMiss', 1)
+                    total += size
 
         with ff.timer('t_devDEvict', getProf(), final=False):
             self.makeRoom(total)
@@ -404,10 +405,15 @@ class bufferCache():
         re-read (you should probably make sure this doesn't happen by flushing
         when needed)."""
 
-        if bSpec.key in self.bufs:
-            logging.debug("Loading from Cache: {}".format(bSpec.name))
+        name = bSpec[0]
+        size = bSpec[1]
+        key = bSpec[2]
+        ephemeral = bSpec[3]
+
+        if key in self.bufs:
+            logging.debug("Loading from Cache: {}".format(name))
             updateProf('n_hostDHit', 1)
-            buf = self.bufs[bSpec.key]
+            buf = self.bufs[key]
 
             if overwrite:
                 buf.clear()
@@ -417,30 +423,33 @@ class bufferCache():
                 self.policy.remove(buf)
         else:
             updateProf('n_hostDMiss', 1)
-            if bSpec.ephemeral or overwrite:
-                logging.debug("Loading (new buffer): {}".format(bSpec.name))
+            if ephemeral or overwrite:
+                logging.debug("Loading (new buffer): {}".format(name))
                 buf = kaasBuf.fromSpec(bSpec)
 
                 if buf.ephemeral:
-                    self.ephemerals[bSpec.key] = buf
+                    self.ephemerals[key] = buf
             else:
                 with ff.timer('t_hostDLoad', getProf(), final=False):
-                    raw = self.kv.get(bSpec.key, profile=getProf(mod='kv'), profFinal=False)
+                    raw = self.kv.get(key, profile=getProf(mod='kv'), profFinal=False)
                 if raw is None:
-                    logging.debug("Loading (new buffer): {}".format(bSpec.name))
+                    logging.debug("Loading (new buffer): {}".format(name))
                     buf = kaasBuf.fromSpec(bSpec)
                 else:
-                    logging.debug("Loading from KV: {} (key: {})".format(bSpec.name, bSpec.key))
-                    updateProf('s_hostDLoad', bSpec.size)
+                    logging.debug("Loading from KV: {} (key: {})".format(name, key))
+                    updateProf('s_hostDLoad', size)
                     buf = kaasBuf.fromSpec(bSpec, raw)
+
+        buf.useCount += 1
 
         # This is mostly a safety check, we should have already made enough
         # room
-        self.makeRoomForBufs([buf])
+        #XXX I think this might be a performance hit for no reason
+        self.makeRoomForBufs([bSpec])
 
         self.size += buf.toDevice()
 
-        self.bufs[bSpec.key] = buf
+        self.bufs[key] = buf
         self.policy.push(buf)
 
         return buf
@@ -519,54 +528,32 @@ def kaasServeInternal(req, ctx):
     # finds all the unique buffers in the request
     with ff.timer("t_makeRoom", profs, final=False):
         bCache.makeRoomForBufs(req.bufferMap.values())
-    # allBSpecs = {}
-    # for kSpec in req.kernels:
-    #     for bSpec in kSpec.arguments:
-    #         allBSpecs[bSpec.key] = bSpec
-    # with ff.timer("t_makeRoom", profs, final=False):
-    #     bCache.makeRoomForBufs(allBSpecs.values())
 
     invokeTimes = []
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)
 
-        # The user should ensure that all buffers will fit on the device.
-        # Invoke() will catch the mistake if they don't.
-        arguments = []
-        for argName in kSpec.arguments:
-            arg = req.bufferMap[argName]
-            if arg.iotype == 'o':
-                arguments.append(bCache.load(arg, overwrite=True))
-                if not arg.ephemeral:
-                    bCache.dirty(arg.key)
-            else:
-                arguments.append(bCache.load(arg, overwrite=False))
+        specArgs = kSpec[7]
+        ioTypes = kSpec[8]
 
-        # for i in range(len(kSpec.arguments)):
-        #     arg = kSpec.arguments[i]
-        #
-        #     if kSpec.type_list[i] == 'o':
-        #         argBuf = bCache.load(arg, overwrite=True)
-        #     else:
-        #         argBuf = bCache.load(arg)
-        #
-        #     # Prevent buffers needed by the current request from being evicted
-        #     # This shouldn't happen anyway if LRU is working correctly.
-        #     argBuf.pin = True
-        #
-        #     arguments.append(argBuf)
+        arguments = []
+        for argName, ioType in zip(specArgs, ioTypes):
+            arg = req.bufferMap[argName]
+            if ioType == 'o':
+                argBuf = bCache.load(arg, overwrite=True)
+            else:
+                argBuf = bCache.load(arg)
+
+            if ioType == 'o' or ioType == 'io':
+                bCache.dirty(argBuf.key)
+
+            arguments.append(argBuf)
 
         with ff.timer("t_invokeExternal", profs, final=False):
-            timer = kern.Invoke(kSpec.literals, arguments, kSpec.gridDim, kSpec.blockDim, kSpec.sharedSize)
+            timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
             profSync()
         invokeTimes.append(timer)
 
-        # Inform the bCache that the output buffers are dirty and need to be
-        # committed on eviction.
-        # for o in kSpec.outputs:
-        #     if not o.ephemeral:
-        #         bCache.dirty(o.key)
-        #
         # ***********************
         # It turns out on the big models, cudaMM is dominant. We should measure
         # it, but the overhead of extra evictions and stuff is unlikely to

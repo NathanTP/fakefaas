@@ -215,20 +215,24 @@ class kaasReq():
 
 
 denseBuf = collections.namedtuple("denseBuf",
-                                  ['name', 'size', 'key', 'ephemeral', 'const', 'iotype'])
+                                  ['name', 'size', 'key', 'ephemeral', 'const'])
 
 denseLiteral = collections.namedtuple("denseLiteral", ['type', 'val'])
 
 denseKern = collections.namedtuple("denseKern",
                                    ['library', 'kernel', 'gridDim', 'blockDim',
                                     'sharedSize', 'literals', 'arguments'])
-#XXX
-# need: name, libPath, arguments, inputs, temps, uniqueOutputs, literals, kernel, gridDim,
-# blockDim, sharedSize
-# I think we only actually need to know the number of buffers (being careful
-# not to double-count input/output buffers)
+
 
 class kaasReqDense():
+    """A high performance version of kaasReq that is fast to serialize and
+    modify, though it's less pleasant to work with. We use tuples for everything:
+        - buffers:  (0 name, 1 size, 2 key, 3 ephemeral?, 4 const?)
+        - kernels:  (0 name, 1 libraryPath, 2 kernelFunc,
+                     3 gridDim, 4 blockDim, 5 sharedSize,
+                     6 literals, 7 arguments, 8 ioTypes)
+        - literals: (0 type, 1 value)
+    """
     @classmethod
     def fromDict(cls, d):
         kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
@@ -241,16 +245,19 @@ class kaasReqDense():
             arguments = []
             for buf in kern.arguments:
                 if buf.name not in self.bufferMap:
-                    self.bufferMap[buf.name] = denseBuf(buf.name, buf.size, buf.key, buf.ephemeral, buf.const, buf.iotype)
+                    self.bufferMap[buf.name] = (buf.name, buf.size, buf.key, buf.ephemeral, buf.const)
                 arguments.append(buf.name)
 
-            literals = [denseLiteral(literal.t, literal.val) for literal in kern.literals]
-            dKern = denseKern(kern.library, kern.kernel, kern.gridDim,
-                              kern.blockDim, kern.sharedSize, literals,
-                              arguments)
+            # isOutputList = [(iotype == 'o' or iotype == 'io') for iotype in kern.type_list]
+
+            literals = [(literal.t, literal.val) for literal in kern.literals]
+            dKern = (kern.name, str(kern.libPath), kern.kernel,
+                     kern.gridDim, kern.blockDim, kern.sharedSize,
+                     literals, arguments, kern.type_list)
 
             self.kernels.append(dKern)
 
     def reKey(self, keyMap):
         for name, newKey in keyMap.items():
-            self.bufferMap[name].key = newKey
+            oldBuf = self.bufferMap[name]
+            self.bufferMap[name] = (oldBuf[0], oldBuf[1], newKey, oldBuf[3], oldBuf[4])

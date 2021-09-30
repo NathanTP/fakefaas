@@ -3,6 +3,7 @@ import math
 import sys
 import subprocess as sp
 from pprint import pprint
+import GPUtil
 
 import time
 import pickle
@@ -287,7 +288,106 @@ def testMatMul(mode='direct'):
         print("PASS")
 
 
-def bigReq():
+evictionBlockBits = 8  # 256
+evictionBlockSize = 2**evictionBlockBits
+
+
+def generateEvictionReq(nInput, arrSize, startID):
+    """This req doesn't need to do anything with its inputs, all that matters
+    is the size/mix of buffers"""
+    arrNElem = int(arrSize / 4)
+
+    elemPerBlock = int(evictionBlockSize / 4)
+    nBlock = int(arrNElem / elemPerBlock)
+
+    inputArrs = []
+    kerns = []
+    for i in range(nInput):
+        ID = i + startID
+        name = f'arr{startID}_{i}'
+        inBuf = kaas.bufferSpec(name, arrSize, ephemeral=False)
+        inputArrs.append((name, np.repeat(np.array([ID], dtype=np.int32), arrNElem)))
+
+        if i == nInput - 1:
+            # Last output is non-ephemeral
+            outBuf = kaas.bufferSpec(name + "_out", arrSize, ephemeral=False)
+            outName = name + "_out"
+            outID = ID
+        else:
+            outBuf = kaas.bufferSpec(name + "_out", arrSize, ephemeral=True)
+
+        # Const or dynamic input
+        literals = [kaas.literalSpec('i', arrNElem), kaas.literalSpec('i', ID)]
+        kerns.append(kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                     'verifyAndCopy',
+                                     (nBlock, 1, 1), (elemPerBlock, 1, 1),
+                                     arguments=[(inBuf, 'i'), (outBuf, 'o')],
+                                     literals=literals))
+
+        # Check output (most are ephemeral)
+        literals = [kaas.literalSpec('i', arrNElem), kaas.literalSpec('i', -ID)]
+        kerns.append(kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                     'verifyArr',
+                                     (nBlock, 1, 1), (elemPerBlock, 1, 1),
+                                     arguments=[(outBuf, 'i')],
+                                     literals=literals))
+
+    kReq = kaas.kaasReqDense(kerns)
+    return kReq, inputArrs, outName, outID
+
+
+def testEviction(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    gpus = GPUtil.getGPUs()
+    gpuMem = gpus[0].memoryTotal * 2**20
+
+    # To stress the eviction, we create relatively small arrays so we can have
+    # lots of them. Round to a multiple of block size.
+    arrSize = (int(gpuMem / 16) >> evictionBlockBits) << evictionBlockBits
+    # arrSize = 256
+
+    depth = 3
+    nClient = 3
+
+    lastOutID = 0
+    reqs = []
+    for i in range(nClient):
+        reqs.append(generateEvictionReq(depth, arrSize, lastOutID))
+        kReq, inputArrs, outName, outID = reqs[-1]
+        for name, arr in inputArrs:
+            libffCtx.kv.put(name, arr)
+
+        kaasHandle.Invoke(kReq)
+        lastOutID = outID
+
+        outNP = np.frombuffer(libffCtx.kv.get(outName), dtype=np.int32)
+        if not np.array_equal(outNP, inputArrs[-1][1]*-1):
+            print("FAILED")
+
+    # Let's go again, this time treating all but the first buffer as constant
+    for i in range(3):
+        for kReq, inputArrs, outName, outID in reqs:
+            inpName, inpArr = inputArrs[0]
+
+            newKey = inpName + "_iter" + str(i)
+            keyMap = {inpName: newKey}
+            libffCtx.kv.put(newKey, inpArr)
+
+            kReq.reKey(keyMap)
+            kaasHandle.Invoke(kReq)
+
+            outNP = np.frombuffer(libffCtx.kv.get(outName), dtype=np.int32)
+            if not np.array_equal(outNP, inputArrs[-1][1]*-1):
+                print("FAILED")
+
+    kaasHandle.Close()
+    print("PASS")
+
+
+def profileReqHandling():
+    """Profiling for the kaasReq datastructures (kaasReq and kaasReqDense)"""
     nByte = 128
 
     kerns = []
@@ -334,7 +434,7 @@ def bigReq():
     print("Deserializing full took: ", time.time() - start)
 
     start = time.time()
-    denseReqDes = pickle.loads(denseReqSer)
+    pickle.loads(denseReqSer)
     print("Deserializing dense took: ", time.time() - start)
 
     start = time.time()
@@ -377,3 +477,7 @@ if __name__ == "__main__":
     print("Rekey:")
     with ff.testenv('simple', mode):
         testRekey(mode)
+
+    print("Evictions:")
+    with ff.testenv('simple', mode):
+        testEviction('direct')

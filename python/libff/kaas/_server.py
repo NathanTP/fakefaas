@@ -1,8 +1,5 @@
 import pycuda.driver as cuda
 import pycuda.tools
-# import pycuda.autoinit  # NOQA (this import forces pycuda to initialize but the linter doesn't like it)
-import ctypes
-import ctypes.util
 import numpy as np
 import collections
 import logging
@@ -24,7 +21,7 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 #   - 1 metrics that will have little effect on performance
 #   - 2 synchronize cuda aggresively to get accurate measurements (hurts e2e
 #       perf)
-profLevel = 1
+profLevel = 2
 
 # This is a global reference to the current ff.profCollection (reset for each call)
 profs = None
@@ -156,7 +153,6 @@ class kaasBuf():
                 self.dbuf = cuda.mem_alloc(self.size)
                 profSync()
 
-            logging.debug(f"Moving {self.size}B from host buffer '{self.name}' to device address 0x{hex(int(self.dbuf))}")
             if self.hbuf is None:
                 logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
                 with ff.timer('t_zero', getProf(), final=False):
@@ -164,6 +160,7 @@ class kaasBuf():
                     profSync()
 
             else:
+                logging.debug(f"Moving {self.size}B from host buffer '{self.name}' to device address 0x{hex(int(self.dbuf))}")
                 with ff.timer('t_htod', getProf(), final=False):
                     cuda.memcpy_htod(self.dbuf, self.hbuf)
                     profSync()
@@ -234,22 +231,24 @@ class kaasFunc():
         dAddrs = []
         for b in bufs:
             if not b.onDevice:
-                raise RuntimeError("Provided buffer was not resident on the device (insufficient memory?): " + b.name)
+                raise RuntimeError(f"Provided buffer was not resident on the device (insufficient memory?): {b.name} ({b.key})")
 
             dAddrs.append(b.dbuf)
 
         args = literalVals + dAddrs
 
         if self.fName == "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSD_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSE_Li0ENSF_INSG_ILi128ELi8EEELi256ELi1EEELi1EEENSK_ISP_fSE_Li0ESR_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSL_fSE_fSE_NSV_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS14_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2EEES1B_bEENS_8epilogue11threadblock8EpilogueIS7_S15_Li1ENS1E_22PredicatedTileIteratorINS1E_26OutputTileOptimalThreadMapINS1E_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1I_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfEENS1D_4warp20FragmentIteratorSimtISX_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSL_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S13_EENS1N_16TileIteratorSimtISX_S1U_fSE_S13_EENS1E_18SharedLoadIteratorINS1L_18CompactedThreadMapEfLi4EEENS1D_6thread17LinearCombinationIfLi1EffLNS21_9ScaleType4KindE0ELS1A_2EEENSB_ILi0ELi17EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE":
+            logging.debug("Invoking <<<{}, {}, {}>>>cutlassSgemm({})".format(gridDim, blockDim, sharedSize,
+                          ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
+
             params = cutlass.parseSgemmArgs(literalVals, dAddrs, kCache.cutlassAdapter)
             self.func.prepare("320s")
             return self.func.prepared_timed_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
+        else:
+            logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
+                          ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
 
-        #XXX there's no logging for cutlasss one
-        logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
-                      ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
-
-        return self.func.prepared_timed_call(gridDim, blockDim, *args, shared_size=sharedSize)
+            return self.func.prepared_timed_call(gridDim, blockDim, *args, shared_size=sharedSize)
 
 
 class kernelCache():
@@ -291,14 +290,14 @@ class lruPolicy():
 
     def remove(self, buf):
         """Remove buffer from consideration"""
-        if buf.useCount > 1:
+        if buf.useCount > 2:
             self.lruConst.remove(buf)
         else:
             self.lruOther.remove(buf)
 
     def push(self, buf):
         """Place buffer in the most-recently-used slot"""
-        if buf.useCount > 1:
+        if buf.useCount > 2:
             self.lruConst.appendleft(buf)
         else:
             self.lruOther.appendleft(buf)
@@ -310,9 +309,6 @@ class lruPolicy():
             b = self.lruOther.pop()
         else:
             b = self.lruConst.pop()
-
-        if b.pin:
-            raise RuntimeError(f"Attempting to evict pinned buffer: name {b.name}, key {b.key}, eph {b.ephemeral}")
 
         return b
 
@@ -366,7 +362,7 @@ class bufferCache():
         while self.cap - self.size < sz:
             updateProf('n_devDEvict', 1)
             b = self.policy.pop()
-            logging.debug("Evicting " + b.name)
+            logging.debug(f"Evicting {b.name} ({b.key})")
 
             if b.dirty:
                 updateProf('s_devDWriteBack', b.size())
@@ -413,6 +409,7 @@ class bufferCache():
         if key in self.bufs:
             logging.debug("Loading from Cache: {}".format(name))
             updateProf('n_hostDHit', 1)
+
             buf = self.bufs[key]
 
             if overwrite:
@@ -440,19 +437,17 @@ class bufferCache():
                     updateProf('s_hostDLoad', size)
                     buf = kaasBuf.fromSpec(bSpec, raw)
 
-        buf.useCount += 1
-
-        # This is mostly a safety check, we should have already made enough
-        # room
-        #XXX I think this might be a performance hit for no reason
-        self.makeRoomForBufs([bSpec])
+        self.makeRoom(buf.size)
 
         self.size += buf.toDevice()
 
         self.bufs[key] = buf
-        self.policy.push(buf)
 
         return buf
+
+    def release(self, buf):
+        buf.useCount += 1
+        self.policy.push(buf)
 
     def dirty(self, key):
         buf = self.bufs[key]
@@ -555,6 +550,9 @@ def kaasServeInternal(req, ctx):
             timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
             profSync()
         invokeTimes.append(timer)
+
+        for buf in arguments:
+            bCache.release(buf)
 
         # ***********************
         # It turns out on the big models, cudaMM is dominant. We should measure

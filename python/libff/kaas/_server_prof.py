@@ -21,7 +21,7 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 #   - 1 metrics that will have little effect on performance
 #   - 2 synchronize cuda aggresively to get accurate measurements (hurts e2e
 #       perf)
-profLevel = 2
+profLevel = 0
 
 # This is a global reference to the current ff.profCollection (reset for each call)
 profs = None
@@ -45,7 +45,7 @@ def updateProf(name, val, level=1):
 
 def getProf(level=1, mod=None):
     """Returns the profs object (ff.profCollection) for this level. If level is
-    above the current profLevel, Non is returned. This is suitable for use in a
+    above the current profLevel, None is returned. This is suitable for use in a
     ff.timer context."""
     if level <= profLevel:
         if mod is None:
@@ -81,7 +81,7 @@ eventMetrics = [
     't_cudaMM',
     't_hostMM']
 
-eventMetrics += ['t_makeRoom', 't_invokeExternal']
+eventMetrics += ['t_makeRoom', 't_invokeExternal', 't_getKern', 't_setupArgs', 't_bCacheLoad']
 
 # These metrics need to be handled with special cases
 metricSpecial = ['t_invoke']
@@ -201,11 +201,11 @@ class kaasBuf():
 
     def clear(self):
         logging.debug("Clearing existing buffer " + self.name)
-        with ff.timer('t_zero', getProf(), final=False):
-            self.hbuf = None
-            if self.onDevice:
-                cuda.memset_d8(self.dbuf, 0, self.size)
-                profSync()
+        # with ff.timer('t_zero', getProf(), final=False):
+        #     self.hbuf = None
+            # if self.onDevice:
+            #     cuda.memset_d8(self.dbuf, 0, self.size)
+            #     profSync()
 
 
 class kaasFunc():
@@ -263,11 +263,12 @@ class kernelCache():
 
     def get(self, spec):
         name = spec[0]
-        libPath = spec[1]
-        args = spec[7]
-        literals = spec[6]
-        kernelFunc = spec[2]
         if name not in self.kerns:
+            libPath = spec[1]
+            args = spec[7]
+            literals = spec[6]
+            kernelFunc = spec[2]
+
             updateProf('n_KMiss', 1)
             with ff.timer('t_kernelLoad', getProf(), final=False):
                 if libPath not in self.libs:
@@ -406,14 +407,19 @@ class bufferCache():
         key = bSpec[2]
         ephemeral = bSpec[3]
 
-        if key in self.bufs:
+        buf = self.bufs.get(key, None)
+        if buf is not None:
             logging.debug("Loading from Cache: {}".format(name))
             updateProf('n_hostDHit', 1)
 
-            buf = self.bufs[key]
+            with ff.timer("t_bCacheLoad", getProf(), final=False):
+                if buf.onDevice:
+                    # with ff.timer('t_zero', None, final=False):
+                    cuda.memset_d8(buf.dbuf, 0, buf.size)
+                    profSync()
 
-            if overwrite:
-                buf.clear()
+                # if overwrite:
+                #     buf.clear()
 
             # Reset LRU
             if buf.onDevice:
@@ -521,13 +527,15 @@ def kaasServeInternal(req, ctx):
     # We try to help the cuda memory allocator out by freeing all the buffers
     # at once instead of mixing frees and mallocs at a fine-grain. This loop
     # finds all the unique buffers in the request
-    with ff.timer("t_makeRoom", profs, final=False):
+    with ff.timer("t_makeRoom", getProf(), final=False):
         bCache.makeRoomForBufs(req.bufferMap.values())
 
     invokeTimes = []
     visibleOutputs = []
     for kSpec in req.kernels:
-        kern = kCache.get(kSpec)
+        #XXX
+        with ff.timer("t_getKern", getProf(), final=False):
+            kern = kCache.get(kSpec)
 
         specArgs = kSpec[7]
         ioTypes = kSpec[8]
@@ -535,10 +543,11 @@ def kaasServeInternal(req, ctx):
         arguments = []
         for argName, ioType in zip(specArgs, ioTypes):
             arg = req.bufferMap[argName]
-            if ioType == 'o':
-                argBuf = bCache.load(arg, overwrite=True)
-            else:
-                argBuf = bCache.load(arg)
+            with ff.timer("t_setupArgs", getProf(), final=False):
+                if ioType == 'o':
+                    argBuf = bCache.load(arg, overwrite=True)
+                else:
+                    argBuf = bCache.load(arg)
 
             if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                 bCache.dirty(argBuf.key)
@@ -546,7 +555,7 @@ def kaasServeInternal(req, ctx):
 
             arguments.append(argBuf)
 
-        with ff.timer("t_invokeExternal", profs, final=False):
+        with ff.timer("t_invokeExternal", getProf(), final=False):
             timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
             profSync()
         invokeTimes.append(timer)
@@ -577,7 +586,7 @@ def kaasServeInternal(req, ctx):
     # private state into whatever consistency properties the KV gives us.
     bCache.flush()
 
-    if profLevel >= 1:
+    if profLevel > 0:
         for metric in eventMetrics:
             profs[metric].increment()
         for p in profs.mod('kv').values():

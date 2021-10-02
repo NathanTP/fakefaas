@@ -1,7 +1,8 @@
 from . import kaas
 import libff.invoke
 import libff as ff
-from ._server import kaasServeInternal
+# from ._server_light import kaasServeInternal
+from ._server_prof import kaasServeInternal
 
 
 def getHandle(mode, ctx, stats=None):

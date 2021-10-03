@@ -2,12 +2,8 @@ import pycuda.driver as cuda
 import pycuda.tools
 import numpy as np
 import collections
-import logging
 import atexit
 import os
-
-import libff as ff
-import libff.kv
 
 from . import kaas
 
@@ -149,10 +145,13 @@ class kaasBuf():
         else:
             self.dbuf = cuda.mem_alloc(self.size)
 
-            if self.hbuf is None:
-                cuda.memset_d8(self.dbuf, 0, self.size)
-            else:
+            if self.hbuf is not None:
                 cuda.memcpy_htod(self.dbuf, self.hbuf)
+
+            # if self.hbuf is None:
+            #     cuda.memset_d8(self.dbuf, 0, self.size)
+            # else:
+            #     cuda.memcpy_htod(self.dbuf, self.hbuf)
 
             self.onDevice = True
             return self.size
@@ -361,15 +360,13 @@ class bufferCache():
         re-read (you should probably make sure this doesn't happen by flushing
         when needed)."""
 
-        name = bSpec[0]
-        size = bSpec[1]
         key = bSpec[2]
         ephemeral = bSpec[3]
 
         buf = self.bufs.get(key, None)
         if buf is not None:
-            if overwrite:
-                buf.clear()
+            # if overwrite:
+            #     buf.clear()
 
             # Reset LRU
             if buf.onDevice:
@@ -469,7 +466,6 @@ def kaasServeInternal(req, ctx):
     # finds all the unique buffers in the request
     bCache.makeRoomForBufs(req.bufferMap.values())
 
-    invokeTimes = []
     visibleOutputs = []
     for kSpec in req.kernels:
         kern = kCache.get(kSpec)

@@ -20,7 +20,8 @@ class rayKV():
 
     def get(self, k, profile=None, profFinal=True):
         # Ray returns immutable objects so we have to make a copy
-        return bytearray(memoryview(ray.get(k)))
+        ref = ray.cloudpickle.loads(k)
+        return bytearray(memoryview(ray.get(ref)))
 
     def delete(self, *keys, profile=None, profFinal=True):
         # Ray is immutable

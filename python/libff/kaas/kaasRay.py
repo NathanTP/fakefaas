@@ -33,7 +33,13 @@ class rayKV():
         pass
 
 
-def kaasServeRay(req, stats=None):
+# Request serialization/deserialization is a pretty significant chunk of time,
+# but they only change in very minor ways each time so we cache the
+# deserialization here.
+reqCache = {}
+
+
+def kaasServeRay(rawReq, stats=None):
     """Handle a single KaaS request in the current thread/actor/task. GPU state
     is cached and no attempt is made to be polite in sharing the GPU. The user
     should ensure that the only GPU-enabled functions running are
@@ -42,6 +48,16 @@ def kaasServeRay(req, stats=None):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
     with ff.timer('t_e2e', stats):
+        reqRef = rawReq[0]
+        renameMap = rawReq[1]
+        if reqRef in reqCache:
+            req = reqCache[reqRef]
+        else:
+            req = ray.get(reqRef)
+            reqCache[reqRef] = req
+
+        req.reKey(renameMap)
+
         visibleOutputs = _server.kaasServeInternal(req, ctx)
 
     returns = []

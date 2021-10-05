@@ -7,10 +7,10 @@ __global__ void ReferenceGemm_kernel(
   int N,
   int K,
   float alpha,
-  float const *A,
+  precision const *A,
   int lda,
-  float const *B,
+  precision const *B,
   int ldb,
   float beta,
-  float *C,
+  precision *C,
   int ldc);

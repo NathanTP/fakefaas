@@ -4,20 +4,11 @@
 #include <vector>
 #include <stdlib.h>
 #include <stdio.h>
+#include <cutlass/numeric_types.h>
 #include "helper.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlassAdapters.h"
 #include "kern.h"
-
-using ColumnMajor = cutlass::layout::ColumnMajor;
-
-using CutlassGemm = cutlass::gemm::device::Gemm<float,        // Data-type of A matrix
-                                                ColumnMajor,  // Layout of A matrix
-                                                float,        // Data-type of B matrix
-                                                ColumnMajor,  // Layout of B matrix
-                                                float,        // Data-type of C matrix
-                                                ColumnMajor>; // Layout of C matrix
-
 
 /// Launch a GEMM kernel.
 cudaError_t CutlassSgemmNN(
@@ -25,12 +16,12 @@ cudaError_t CutlassSgemmNN(
   int N,
   int K,
   float alpha,
-  float const *A,
+  precision const *A,
   int lda,
-  float const *B,
+  precision const *B,
   int ldb,
   float beta,
-  float *C,
+  precision *C,
   int ldc) {
 
   cudaError_t result;
@@ -49,6 +40,8 @@ cudaError_t CutlassSgemmNN(
   printf("Block: (%d, %d, %d)\n", block.x, block.y, block.z);
   printf("Smem Size: %d\n", smem_size);
 
+  // printf("complex size: %lu\n", sizeof(precision));
+  printf("param size: %lu\n", sizeof(*params_ptr));
   // Launch cutlass gemm kernel
   cutlass::Kernel<CutlassGemm::GemmKernel><<<grid, block, smem_size>>>(*params_ptr);
 
@@ -65,7 +58,7 @@ cudaError_t CutlassSgemmNN(
 
 /// Kernel to initialize a matrix with small integers.
 __global__ void InitializeMatrix_kernel(
-  float *matrix,
+  precision *matrix,
   int rows,
   int columns,
   int seed = 0) {
@@ -79,14 +72,16 @@ __global__ void InitializeMatrix_kernel(
     // Generate arbitrary elements.
     int const k = 16807;
     int const m = 16;
-    float value = float(((offset + seed) * k % m) - m / 2);
+    precision value;
+    value.real() = (((offset + seed) * k % m) - m / 2);
+    value.imag() = (((offset + seed) * k % m) - m / 2);
 
     matrix[offset] = value;
   }
 }
 
 /// Simple function to initialize a matrix to arbitrary small integers.
-cudaError_t InitializeMatrix(float *matrix, int rows, int columns, int seed = 0) {
+cudaError_t InitializeMatrix(precision *matrix, int rows, int columns, int seed = 0) {
 
   dim3 block(16, 16);
   dim3 grid(
@@ -102,10 +97,10 @@ cudaError_t InitializeMatrix(float *matrix, int rows, int columns, int seed = 0)
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Allocates device memory for a matrix then fills with arbitrary small integers.
-cudaError_t AllocateMatrix(float **matrix, int rows, int columns, int seed = 0) {
+cudaError_t AllocateMatrix(precision **matrix, int rows, int columns, int seed = 0) {
   cudaError_t result;
 
-  size_t sizeof_matrix = sizeof(float) * rows * columns;
+  size_t sizeof_matrix = sizeof(precision) * rows * columns;
 
   // Allocate device memory.
   result = cudaMalloc(reinterpret_cast<void **>(matrix), sizeof_matrix);
@@ -144,20 +139,20 @@ __global__ void ReferenceGemm_kernel(
   int M,
   int N,
   int K,
-  float alpha,
-  float const *A,
+  precision alpha,
+  precision const *A,
   int lda,
-  float const *B,
+  precision const *B,
   int ldb,
-  float beta,
-  float *C,
+  precision beta,
+  precision *C,
   int ldc) {
 
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   int j = threadIdx.y + blockIdx.y * blockDim.y;
 
   if (i < M && j < N) {
-    float accumulator = 0;
+    precision accumulator = 0;
 
     for (int k = 0; k < K; ++k) {
       accumulator += A[i + k * lda] * B[k + j * ldb];
@@ -172,13 +167,13 @@ cudaError_t ReferenceGemm(
   int M,
   int N,
   int K,
-  float alpha,
-  float const *A,
+  precision alpha,
+  precision const *A,
   int lda,
-  float const *B,
+  precision const *B,
   int ldb,
-  float beta,
-  float *C,
+  precision beta,
+  precision *C,
   int ldc) {
 
   dim3 block(16, 16);
@@ -209,13 +204,13 @@ cudaError_t TestCutlassGemm(int M, int N, int K, float alpha, float beta) {
   int ldc = M;
 
   // Compute size in bytes of the C matrix.
-  size_t sizeof_C = sizeof(float) * ldc * N;
+  size_t sizeof_C = sizeof(precision) * ldc * N;
 
   // Define pointers to matrices in GPU device memory.
-  float *A;
-  float *B;
-  float *C_cutlass;
-  float *C_reference;
+  precision *A;
+  precision *B;
+  precision *C_cutlass;
+  precision *C_reference;
 
   //
   // Allocate matrices in GPU device memory with arbitrary seeds.
@@ -287,9 +282,14 @@ cudaError_t TestCutlassGemm(int M, int N, int K, float alpha, float beta) {
   //
   // Verify.
   //
-
+  precision alpha_c;
+  precision beta_c;
+  alpha_c.real() = alpha;
+  alpha_c.imag() = 0.0;
+  beta_c.real() = beta;
+  beta_c.imag() = 0.0;
   // Launch reference GEMM
-  result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc);
+  result = ReferenceGemm(M, N, K, alpha_c, A, lda, B, ldb, beta_c, C_reference, ldc);
 
   if (result != cudaSuccess) {
     std::cerr << "Reference GEMM kernel failed: "
@@ -304,8 +304,8 @@ cudaError_t TestCutlassGemm(int M, int N, int K, float alpha, float beta) {
   }
 
   // Copy to host and verify equivalence.
-  std::vector<float> host_cutlass(ldc * N, 0);
-  std::vector<float> host_reference(ldc * N, 0);
+  std::vector<precision> host_cutlass(ldc * N, 0);
+  std::vector<precision> host_reference(ldc * N, 0);
 
   result = cudaMemcpy(host_cutlass.data(), C_cutlass, sizeof_C, cudaMemcpyDeviceToHost);
 
@@ -362,7 +362,7 @@ cudaError_t TestCutlassGemm(int M, int N, int K, float alpha, float beta) {
 bool testFull(void) {
 
   // GEMM problem dimensions.
-  int problem[3] = { 128, 128, 128 };
+  int problem[3] = { 128, 64, 30 };
 
   // Scalars used for linear scaling the result of the matrix product.
   float scalars[2] = { 1, 0 };
@@ -393,7 +393,7 @@ __global__ void testKernel(testStruct s) {
 
 bool testTestKern(void) {
     int anInt = 42;
-    float *dPtr;
+    precision *dPtr;
     cudaMalloc(&dPtr, 4096*2);
 
     testStruct *s = getTestStruct(anInt, dPtr);

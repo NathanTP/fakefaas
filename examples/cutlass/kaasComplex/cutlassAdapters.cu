@@ -7,25 +7,28 @@ CutlassGemm::GemmKernel::Params *adaptSGEMMArgs(
   int N,
   int K,
   float alpha,
-  float const *A_R,
+  precision const *A,
   int lda,
-  float const *A_I,
-  float const *B_R,
+  precision const *B,
   int ldb,
-  float const *B_I,
   float beta,
-  float *C_R,
-  int ldc,
-  float *C_I) {
+  precision *C,
+  int ldc) {
   // Define a CUTLASS GEMM type
   CutlassGemm gemm_operator;
-
+  
+  precision alpha_c;
+  precision beta_c;
+  alpha_c.real() = alpha;
+  alpha_c.imag() = 0.0;
+  beta_c.real() = beta;
+  beta_c.imag() = 0.0;
   CutlassGemm::Arguments args({M , N, K},  // Gemm Problem dimensions
-                              {A_R, lda, A_I},    // Tensor-ref for source matrix A
-                              {B_R, ldb, B_I},    // Tensor-ref for source matrix B
-                              {C_R, ldc, C_I},    // Tensor-ref for source matrix C
-                              {C_R, ldc, C_I},    // Tensor-ref for destination matrix D (may be different memory than source C matrix)
-                              {alpha, beta}); // Scalars used in the Epilogue
+                              {A, lda},    // Tensor-ref for source matrix A
+                              {B, ldb},    // Tensor-ref for source matrix B
+                              {C, ldc},    // Tensor-ref for source matrix C
+                              {C, ldc},    // Tensor-ref for destination matrix D (may be different memory than source C matrix)
+                              {alpha_c, beta_c}); // Scalars used in the Epilogue
 
   // Launch the CUTLASS GEMM kernel.
   cudaStream_t stream = nullptr;
@@ -41,10 +44,10 @@ CudaConfig *getCudaConfig(int M, int N, int K) {
   CutlassGemm gemm_operator;
 
   CutlassGemm::Arguments args({M , N, K},
-                              {NULL, M, NULL},
-                              {NULL, K, NULL},
-                              {NULL, M, NULL},
-                              {NULL, M, NULL},
+                              {NULL, M},
+                              {NULL, K},
+                              {NULL, M},
+                              {NULL, M},
                               {0.0, 0.0});
 
   // Launch the CUTLASS GEMM kernel.
@@ -72,7 +75,7 @@ CudaConfig *getCudaConfig(int M, int N, int K) {
 }
 
 extern "C"
-testStruct *getTestStruct(int anInt, float *dPtr) {
+testStruct *getTestStruct(int anInt, precision *dPtr) {
     testStruct *s = (testStruct*)malloc(sizeof(testStruct));
     s->anInt = anInt;
     s->dPtr = dPtr;

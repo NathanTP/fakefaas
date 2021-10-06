@@ -4,11 +4,10 @@ import numpy as np
 from numpy import ctypeslib
 import ctypes as ct
 
-# c_complex_p = ctypeslib.ndpointer(np.csingle, ndim=2, flags='C')
+# define complex ctype as a python class
 class complex(ct.Structure):
     _fields_ = [('real', ct.c_float), ('imag', ct.c_float)]
 
-# c_complex_p = ct.POINTER(ct.c_byte*8)
 c_complex_p = ct.POINTER(complex)
 
 def loadKerns():
@@ -51,8 +50,6 @@ def loadAdapter():
     getArg = libc.adaptSGEMMArgs
     getArg.argtypes = [ct.c_int, ct.c_int, ct.c_int, ct.c_float, c_complex_p, ct.c_int,
                        c_complex_p, ct.c_int, ct.c_float, c_complex_p, ct.c_int]
-    # getArg.argtypes = [ct.c_int, ct.c_int, ct.c_int, ct.c_float, ct.c_void_p, ct.c_int, 
-    #                     ct.c_void_p, ct.c_int, ct.c_float, ct.c_void_p, ct.c_int]
     # Instead of trying to define the Params struct in python, we just pretend
     # that it's a byte array of the same size (320 bytes in this case)
     getArg.restype = ct.POINTER(ct.c_byte*328)
@@ -99,8 +96,8 @@ def testSgemm(M, N, K, alpha, beta):
     refKern, cutlassKern = loadKerns()
 
     rng = np.random.default_rng(5)
-    a = np.asfortranarray(rng.random((M, K), dtype=np.float32) * (1+1j))
-    b = np.asfortranarray(rng.random((K, N), dtype=np.float32) * (1+1j))
+    a = np.asfortranarray(rng.random((M, K), dtype=np.float32) + rng.random((M, K), dtype=np.float32) * (1j))
+    b = np.asfortranarray(rng.random((K, N), dtype=np.float32) + rng.random((K, N), dtype=np.float32) * (1j))
     c = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.csingle))
 
     a_d = cuda.mem_alloc(a.nbytes)
@@ -131,10 +128,11 @@ def testSgemm(M, N, K, alpha, beta):
     cuda.memcpy_dtoh(c, c_d)
 
     refC_d = cuda.mem_alloc(c.nbytes)
+    cuda.memset_d8(refC_d, 0, c.nbytes)
 
     refBlock = (16, 16, 1)
     refGrid = (((M + 16 - 1) // 16), ((N + 16 - 1) // 16), 1)
-    refKern.prepared_call(refBlock, refGrid, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
+    refKern.prepared_call(refGrid, refBlock, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
 
     refC_h = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.csingle))
     cuda.memcpy_dtoh(refC_h, refC_d)
@@ -153,11 +151,10 @@ def testSgemm(M, N, K, alpha, beta):
     # Check difference
     print("Difference between numpy and reference result:")
     print(np_res - refC_h)
-    print("Difference between cutlass and numpy result:")
-    print(c - np_res)
+    print("Difference between numpy and cutlass result:")
+    print(np_res - c)
 
 # a = complex(1.0, 0.0)
 # b = complex(0.0, 0.0)
 # testSgemm(128, 128, 128, a, b)
-testSgemm(128, 128, 128, 1, 0)
-# testKern()
+testSgemm(128, 64, 20, 1, 0)

@@ -1,16 +1,16 @@
 CUTLASS_PATH ?= ../cutlass-src
 
-# 75FOUND:=$(shell lspci | grep "T4")
+70FOUND:=$(shell lspci | grep "V100")
 
-# ifneq ($(75FOUND), )
-# 	COMPUTE_CAP:=75
-# else
-# 	COMPUTE_CAP:=35
-# endif
+ifneq ($(70FOUND), )
+	COMPUTE_CAP:=70
+else
+	COMPUTE_CAP:=35
+endif
 
 COMPUTE_CAP:=35
 
-all: cutlassAdapters.so cutlass.cubin
+all: cutlassAdapters.so cutlass.cubin basic_gemm
 
 cutlassAdapters.so: cutlassAdapters.cu
 	/usr/local/cuda-10.2/bin/nvcc -forward-unknown-to-host-compiler \

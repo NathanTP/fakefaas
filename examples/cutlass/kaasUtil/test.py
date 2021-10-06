@@ -89,9 +89,9 @@ def testSgemm(M, N, K, alpha, beta):
     refKern, cutlassKern = loadKerns()
 
     rng = np.random.default_rng(0)
-    a = rng.random((M, K), dtype=np.float32)
-    b = rng.random((K, N), dtype=np.float32)
-    c = np.zeros(shape=(M, N), dtype=np.float32)
+    a = np.asfortranarray(rng.random((M, K), dtype=np.float32))
+    b = np.asfortranarray(rng.random((K, N), dtype=np.float32))
+    c = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.float32))
 
     a_d = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_d, a)
@@ -121,12 +121,13 @@ def testSgemm(M, N, K, alpha, beta):
     cuda.memcpy_dtoh(c, c_d)
 
     refC_d = cuda.mem_alloc(c.nbytes)
+    cuda.memset_d8(refC_d, 0, c.nbytes)
 
     refBlock = (16, 16, 1)
     refGrid = (((M + 16 - 1) // 16), ((N + 16 - 1) // 16), 1)
-    refKern.prepared_call(refBlock, refGrid, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
+    refKern.prepared_call(refGrid, refBlock, M, N, K, alpha, a_d, lda, b_d, ldb, beta, refC_d, ldc)
 
-    refC_h = np.zeros(shape=(M, N), dtype=np.float32)
+    refC_h = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.float32))
     cuda.memcpy_dtoh(refC_h, refC_d)
 
     print("Cutlass Kern Result:")
@@ -136,14 +137,15 @@ def testSgemm(M, N, K, alpha, beta):
     print(refC_h)
 
     print("NP Result: ")
-    np_res = np.matmul(a.T, b.T).T
+    # np_res = np.matmul(a.T, b.T).T
+    np_res = np.matmul(a, b)
     print(np_res)
 
     # Check difference
-    print("Difference between cutlass and reference result:")
-    print(c - refC_h)
-    print("Difference between cutlass and numpy result:")
-    print(c - np_res)
+    print("Difference between numpy and reference result:")
+    print(np_res - refC_h)
+    print("Difference between numpy and cutlass result:")
+    print(np_res - c)
 
 
 testSgemm(128, 128, 128, 1.0, 0.0)

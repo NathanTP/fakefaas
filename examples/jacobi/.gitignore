@@ -1,0 +1,4 @@
+jacobiCudaGraphs
+*.o
+*.so
+*.cubin

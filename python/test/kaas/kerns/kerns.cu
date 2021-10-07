@@ -2,6 +2,29 @@
 #include <stdio.h>
 
 extern "C"
+__global__ void verifyAndCopy(int len, int expect, int* in, int* out)
+{
+    int idx = blockIdx.x *blockDim.x + threadIdx.x;
+    int val = in[idx];
+    if(val != expect) {
+        printf("Expected %d, got %d\n", expect, val);
+        assert(val == expect);
+    }
+    out[idx] = -val;
+}
+
+extern "C"
+__global__ void verifyArr(int len, int expect, int* in)
+{
+    int idx = blockIdx.x *blockDim.x + threadIdx.x;
+    int val = in[idx];
+    if(val != expect) {
+        printf("(%d) Expected %d, got %d\n", idx, expect, val);
+        assert(val == expect);
+    }
+}
+
+extern "C"
 __global__ void doublifyKern(float* a)
 {
     int idx = threadIdx.x + blockIdx.x*4;

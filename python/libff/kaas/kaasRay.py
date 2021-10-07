@@ -1,6 +1,7 @@
 import libff as ff
 import libff.invoke
-from . import _server
+from . import _server_light as _server
+# from . import _server_prof as _server
 
 import ray
 
@@ -19,7 +20,8 @@ class rayKV():
 
     def get(self, k, profile=None, profFinal=True):
         # Ray returns immutable objects so we have to make a copy
-        return bytearray(memoryview(ray.get(k)))
+        ref = ray.cloudpickle.loads(k)
+        return bytearray(memoryview(ray.get(ref)))
 
     def delete(self, *keys, profile=None, profFinal=True):
         # Ray is immutable
@@ -31,7 +33,13 @@ class rayKV():
         pass
 
 
-def kaasServeRay(req, stats=None):
+# Request serialization/deserialization is a pretty significant chunk of time,
+# but they only change in very minor ways each time so we cache the
+# deserialization here.
+reqCache = {}
+
+
+def kaasServeRay(rawReq, stats=None):
     """Handle a single KaaS request in the current thread/actor/task. GPU state
     is cached and no attempt is made to be polite in sharing the GPU. The user
     should ensure that the only GPU-enabled functions running are
@@ -39,16 +47,22 @@ def kaasServeRay(req, stats=None):
     the request)"""
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
-    # kReq = kaas.kaasReq.fromDict(req)
     with ff.timer('t_e2e', stats):
-        _server.kaasServeInternal(req, ctx)
+        reqRef = rawReq[0]
+        renameMap = rawReq[1]
+        if reqRef in reqCache:
+            req = reqCache[reqRef]
+        else:
+            req = ray.get(reqRef)
+            reqCache[reqRef] = req
 
-    # Returns is an ordered list of output ray references
+        req.reKey(renameMap)
+
+        visibleOutputs = _server.kaasServeInternal(req, ctx)
+
     returns = []
-    for kern in req.kernels:
-        for out in kern.outputs:
-            if not out.ephemeral:
-                returns.append(ctx.kv.newRefs[out.key])
+    for outKey in visibleOutputs:
+        returns.append(ctx.kv.newRefs[outKey])
 
     # This is a ray weirdness. If you return multiple values in a tuple, it's
     # returned as multiple independent references, if you return a tuple of length

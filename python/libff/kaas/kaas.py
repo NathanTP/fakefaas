@@ -5,6 +5,7 @@
 # decisions will be different.
 
 import pathlib
+import collections
 import os
 
 serverPackage = pathlib.Path(__file__).resolve().parent
@@ -89,13 +90,16 @@ class literalSpec():
         defined using the same symbol's as python's struct definition language
         (see pycuda's docs for function.prepare()). Val must be json
         serializable and convertable to t."""
-        if t not in ['f', 'd', 'Q']:
+        if t not in ['i', 'f', 'd', 'Q']:
             raise KaasError("Type " + str(t) + " not permitted for scalars")
         self.t = t
         self.val = val
 
     def toDict(self):
         return {"type": self.t, "val": self.val}
+
+    def __str__(self):
+        return f"Literal {self.t} {self.val}"
 
 
 builtins = {
@@ -106,6 +110,7 @@ cutlassLib = {
     "sgemm0": "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSD_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSE_Li0ENSF_INSG_ILi128ELi8EEELi256ELi1EEELi1EEENSK_ISP_fSE_Li0ESR_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSL_fSE_fSE_NSV_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS14_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2EEES1B_bEENS_8epilogue11threadblock8EpilogueIS7_S15_Li1ENS1E_22PredicatedTileIteratorINS1E_26OutputTileOptimalThreadMapINS1E_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1I_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfEENS1D_4warp20FragmentIteratorSimtISX_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSL_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S13_EENS1N_16TileIteratorSimtISX_S1U_fSE_S13_EENS1E_18SharedLoadIteratorINS1L_18CompactedThreadMapEfLi4EEENS1D_6thread17LinearCombinationIfLi1EffLNS21_9ScaleType4KindE0ELS1A_2EEENSB_ILi0ELi17EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE",
     "sgemm1": "ReferenceGemm_kernel"
 }
+
 
 class kernelSpec():
     """Kernel specs describe a kernel for a particular request."""
@@ -208,3 +213,50 @@ class kaasReq():
 
     def toDict(self):
         return {"kernels": [k.toDict() for k in self.kernels]}
+
+
+denseBuf = collections.namedtuple("denseBuf",
+                                  ['name', 'size', 'key', 'ephemeral', 'const'])
+
+denseLiteral = collections.namedtuple("denseLiteral", ['type', 'val'])
+
+denseKern = collections.namedtuple("denseKern",
+                                   ['library', 'kernel', 'gridDim', 'blockDim',
+                                    'sharedSize', 'literals', 'arguments'])
+
+
+class kaasReqDense():
+    """A high performance version of kaasReq that is fast to serialize and
+    modify, though it's less pleasant to work with. We use tuples for everything:
+        - buffers:  (0 name, 1 size, 2 key, 3 ephemeral?, 4 const?)
+        - kernels:  (0 name, 1 libraryPath, 2 kernelFunc,
+                     3 gridDim, 4 blockDim, 5 sharedSize,
+                     6 literals, 7 arguments, 8 ioTypes)
+        - literals: (0 type, 1 value)
+    """
+    @classmethod
+    def fromDict(cls, d):
+        kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
+        return cls(kernels)
+
+    def __init__(self, kernels):
+        self.bufferMap = {}
+        self.kernels = []
+        for kern in kernels:
+            arguments = []
+            for buf in kern.arguments:
+                if buf.name not in self.bufferMap:
+                    self.bufferMap[buf.name] = (buf.name, buf.size, buf.key, buf.ephemeral, buf.const)
+                arguments.append(buf.name)
+
+            literals = [(literal.t, literal.val) for literal in kern.literals]
+            dKern = (kern.name, str(kern.libPath), kern.kernel,
+                     kern.gridDim, kern.blockDim, kern.sharedSize,
+                     literals, arguments, kern.type_list)
+
+            self.kernels.append(dKern)
+
+    def reKey(self, keyMap):
+        for name, newKey in keyMap.items():
+            oldBuf = self.bufferMap[name]
+            self.bufferMap[name] = (oldBuf[0], oldBuf[1], newKey, oldBuf[3], oldBuf[4])

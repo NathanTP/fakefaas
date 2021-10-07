@@ -3,6 +3,10 @@ import math
 import sys
 import subprocess as sp
 from pprint import pprint
+import GPUtil
+
+import time
+import pickle
 
 import libff as ff
 import libff.kv
@@ -42,11 +46,11 @@ def runDoublify(kaasHandle, libffCtx, testArray=None):
                            (1, 1), (16, 1, 1),
                            arguments=arguments)
 
-    req = kaas.kaasReq([kern])
+    req = kaas.kaasReqDense([kern])
 
     # This is just for the test, a real system would use libff to invoke the
     # kaas server
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
 
     doubledBytes = libffCtx.kv.get('input')
     doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
@@ -129,7 +133,7 @@ def getDotProdReq(nElem):
                               (1, 1), (nElem // 2, 1, 1),
                               arguments=args_sum)
 
-    return kaas.kaasReq([prodKern, sumKern])
+    return kaas.kaasReqDense([prodKern, sumKern])
 
 
 def testDotProd(mode='direct'):
@@ -147,7 +151,7 @@ def testDotProd(mode='direct'):
 
     req = getDotProdReq(nElem)
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     kaasHandle.Close()
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
@@ -179,7 +183,7 @@ def testRekey(mode='direct'):
 
     req = getDotProdReq(nElem)
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.uint32)[0]
 
@@ -189,7 +193,7 @@ def testRekey(mode='direct'):
     libffCtx.kv.put('bNew',   bNew)
 
     req.reKey({'inpA': 'aNew', 'inpB': 'bNew', 'output': "cNew"})
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     c2 = np.frombuffer(libffCtx.kv.get('cNew'), dtype=np.uint32)[0]
 
     expect1 = np.dot(aArr, bArr)
@@ -250,9 +254,9 @@ def testMatMul(mode='direct'):
                            gridDim, blockDim, sharedSize=sharedSize,
                            arguments=args)
 
-    req = kaas.kaasReq([kern])
+    req = kaas.kaasReqDense([kern])
 
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
     kaasHandle.Close()
 
     cRaw = libffCtx.kv.get('C')
@@ -282,6 +286,164 @@ def testMatMul(mode='direct'):
         print(npArr)
     else:
         print("PASS")
+
+
+evictionBlockBits = 8  # 256
+evictionBlockSize = 2**evictionBlockBits
+
+
+def generateEvictionReq(nInput, arrSize, startID):
+    """This req doesn't need to do anything with its inputs, all that matters
+    is the size/mix of buffers"""
+    arrNElem = int(arrSize / 4)
+
+    elemPerBlock = int(evictionBlockSize / 4)
+    nBlock = int(arrNElem / elemPerBlock)
+
+    inputArrs = []
+    kerns = []
+    for i in range(nInput):
+        ID = i + startID
+        name = f'arr{startID}_{i}'
+        inBuf = kaas.bufferSpec(name, arrSize, ephemeral=False)
+        inputArrs.append((name, np.repeat(np.array([ID], dtype=np.int32), arrNElem)))
+
+        if i == nInput - 1:
+            # Last output is non-ephemeral
+            outBuf = kaas.bufferSpec(name + "_out", arrSize, ephemeral=False)
+            outName = name + "_out"
+            outID = ID
+        else:
+            outBuf = kaas.bufferSpec(name + "_out", arrSize, ephemeral=True)
+
+        # Const or dynamic input
+        literals = [kaas.literalSpec('i', arrNElem), kaas.literalSpec('i', ID)]
+        kerns.append(kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                     'verifyAndCopy',
+                                     (nBlock, 1, 1), (elemPerBlock, 1, 1),
+                                     arguments=[(inBuf, 'i'), (outBuf, 'o')],
+                                     literals=literals))
+
+        # Check output (most are ephemeral)
+        literals = [kaas.literalSpec('i', arrNElem), kaas.literalSpec('i', -ID)]
+        kerns.append(kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                     'verifyArr',
+                                     (nBlock, 1, 1), (elemPerBlock, 1, 1),
+                                     arguments=[(outBuf, 'i')],
+                                     literals=literals))
+
+    kReq = kaas.kaasReqDense(kerns)
+    return kReq, inputArrs, outName, outID
+
+
+def testEviction(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    gpus = GPUtil.getGPUs()
+    gpuMem = gpus[0].memoryTotal * 2**20
+
+    # To stress the eviction, we create relatively small arrays so we can have
+    # lots of them. Round to a multiple of block size.
+    arrSize = (int(gpuMem / 16) >> evictionBlockBits) << evictionBlockBits
+    # arrSize = 256
+
+    depth = 3
+    nClient = 3
+
+    lastOutID = 0
+    reqs = []
+    for i in range(nClient):
+        reqs.append(generateEvictionReq(depth, arrSize, lastOutID))
+        kReq, inputArrs, outName, outID = reqs[-1]
+        for name, arr in inputArrs:
+            libffCtx.kv.put(name, arr)
+
+        kaasHandle.Invoke(kReq)
+        lastOutID = outID
+
+        outNP = np.frombuffer(libffCtx.kv.get(outName), dtype=np.int32)
+        if not np.array_equal(outNP, inputArrs[-1][1]*-1):
+            print("FAILED")
+
+    # Let's go again, this time treating all but the first buffer as constant
+    for i in range(3):
+        for kReq, inputArrs, outName, outID in reqs:
+            inpName, inpArr = inputArrs[0]
+
+            newKey = inpName + "_iter" + str(i)
+            keyMap = {inpName: newKey}
+            libffCtx.kv.put(newKey, inpArr)
+
+            kReq.reKey(keyMap)
+            kaasHandle.Invoke(kReq)
+
+            outNP = np.frombuffer(libffCtx.kv.get(outName), dtype=np.int32)
+            if not np.array_equal(outNP, inputArrs[-1][1]*-1):
+                print("FAILED")
+
+    kaasHandle.Close()
+    print("PASS")
+
+
+def profileReqHandling():
+    """Profiling for the kaasReq datastructures (kaasReq and kaasReqDense)"""
+    nByte = 128
+
+    kerns = []
+    lastOut = kaas.bufferSpec('inpFirst', nByte)
+    for i in range(1000):
+        inBuf = lastOut
+        constBuf = kaas.bufferSpec('const' + str(i), nByte)
+        outBuf = kaas.bufferSpec('out' + str(i), nByte)
+
+        prodKern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                                   'prodKern',
+                                   (1, 1), (nByte / 4, 1, 1),
+                                   literals=[kaas.literalSpec('Q', nByte / 4)],
+                                   arguments=[(inBuf, 'i'), (constBuf, 'i'), (outBuf, 'o')])
+
+        kerns.append(prodKern)
+        lastOut = outBuf
+
+    keyMap = {}
+    keyMap['inpFirst'] = 'rekeyedInpFirst'
+    for i in range(1000):
+        keyMap['out' + str(i)] = 'reKeyedOut' + str(i)
+
+    fullReq = kaas.kaasReq(kerns)
+    denseReq = kaas.kaasReqDense(kerns)
+
+    start = time.time()
+    total = 0
+    for kern in denseReq.kernels:
+        kern = kaas.denseKern(*kern[:-1])
+        total += len(kern[0])
+    print("parsing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReqSer = pickle.dumps(fullReq)
+    print("Serializing full took: ", time.time() - start)
+
+    start = time.time()
+    denseReqSer = pickle.dumps(denseReq)
+    print("Serializing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReqSer = pickle.loads(fullReqSer)
+    print("Deserializing full took: ", time.time() - start)
+
+    start = time.time()
+    pickle.loads(denseReqSer)
+    print("Deserializing dense took: ", time.time() - start)
+
+    start = time.time()
+    fullReq.reKey(keyMap)
+    print("Reykeying full took: ", time.time() - start)
+
+    start = time.time()
+    denseReq.reKey(keyMap)
+    print("Reykeying dense took: ", time.time() - start)
 
 
 if __name__ == "__main__":
@@ -315,3 +477,7 @@ if __name__ == "__main__":
     print("Rekey:")
     with ff.testenv('simple', mode):
         testRekey(mode)
+
+    print("Evictions:")
+    with ff.testenv('simple', mode):
+        testEviction('direct')

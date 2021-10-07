@@ -1,7 +1,8 @@
 from . import kaas
 import libff.invoke
 import libff as ff
-from ._server import kaasServeInternal
+# from ._server_light import kaasServeInternal
+from ._server_prof import kaasServeInternal
 
 
 def getHandle(mode, ctx, stats=None):
@@ -16,10 +17,10 @@ def getHandle(mode, ctx, stats=None):
 
 def kaasServeLibff(req, ctx):
     # Convert the dictionary req into a kaasReq object
-    kReq = kaas.kaasReq.fromDict(req)
+    # kReq = kaas.kaasReq.fromDict(req)
 
     with ff.timer("t_e2e", ctx.stats):
-        kaasServeInternal(kReq, ctx)
+        kaasServeInternal(req, ctx)
 
 
 def LibffInvokeRegister():

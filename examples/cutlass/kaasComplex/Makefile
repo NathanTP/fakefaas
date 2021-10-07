@@ -13,11 +13,11 @@ COMPUTE_CAP:=35
 all: cutlassAdapters.so cutlass.cubin basic_gemm
 
 cutlassAdapters.so: cutlassAdapters.cu
-	/usr/local/cuda-10.2/bin/nvcc -forward-unknown-to-host-compiler \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
 	-I$(CUTLASS_PATH)/g/examples/common \
 	-I$(CUTLASS_PATH)/g/build/include \
-	-I/usr/local/cuda-10.2/include \
+	-I/usr/local/cuda/include \
 	-I$(CUTLASS_PATH)/g/tools/util/include \
 	-O0 -DNDEBUG -Xcompiler=-fPIC \
 	-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1 -DCUTLASS_TEST_LEVEL=0 -DCUTLASS_DEBUG_TRACE_LEVEL=0 \
@@ -26,11 +26,11 @@ cutlassAdapters.so: cutlassAdapters.cu
 	-x cu -o $@ --shared $^ 
 
 cutlass.cubin: kern.cu
-	/usr/local/cuda-10.2/bin/nvcc -forward-unknown-to-host-compiler \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
 	-I$(CUTLASS_PATH)/g/examples/common \
 	-I$(CUTLASS_PATH)/g/build/include \
-	-I/usr/local/cuda-10.2/include \
+	-I/usr/local/cuda/include \
 	-I$(CUTLASS_PATH)/g/tools/util/include \
 	-O0 -DNDEBUG -Xcompiler=-fPIC \
 	--cubin \
@@ -40,16 +40,14 @@ cutlass.cubin: kern.cu
 	-x cu -c $^ -o $@ 
 
 basic_gemm: basic_gemm.cu cutlassAdapters.so cutlass.cubin
-	/usr/local/cuda-10.2/bin/nvcc -forward-unknown-to-host-compiler \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
 	-I$(CUTLASS_PATH)/../kaasComplex \
 	-I$(CUTLASS_PATH)/examples/common \
 	-I$(CUTLASS_PATH)/build/include \
-	-I/usr/local/cuda-10.2/include \
+	-I/usr/local/cuda/include \
 	-I$(CUTLASS_PATH)/tools/util/include \
 	-L. -l:cutlassAdapters.so \
-	-Wl,-rpath=$(CURDIR) \
-	-O0 -DNDEBUG \
 	-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1 -DCUTLASS_TEST_LEVEL=0 -DCUTLASS_DEBUG_TRACE_LEVEL=0 \
 	-Xcompiler=-Wconversion -Xcompiler=-fno-strict-aliasing \
 	-gencode=arch=compute_$(COMPUTE_CAP),code=sm_$(COMPUTE_CAP) -std=c++11 \

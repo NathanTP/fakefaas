@@ -8,12 +8,13 @@ else
 	COMPUTE_CAP:=35
 endif
 
+COMPUTE_CAP:=35
+
 all: cutlassAdapters.so cutlass.cubin basic_gemm
 
 cutlassAdapters.so: cutlassAdapters.cu
-	/usr/local/cuda/bin/nvcc \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
-	-I$(CUTLASS_PATH)/examples/00_basic_gemm \
 	-I$(CUTLASS_PATH)/g/examples/common \
 	-I$(CUTLASS_PATH)/g/build/include \
 	-I/usr/local/cuda/include \
@@ -25,9 +26,8 @@ cutlassAdapters.so: cutlassAdapters.cu
 	-x cu -o $@ --shared $^ 
 
 cutlass.cubin: kern.cu
-	/usr/local/cuda/bin/nvcc \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
-	-I$(CUTLASS_PATH)/examples/00_basic_gemm \
 	-I$(CUTLASS_PATH)/g/examples/common \
 	-I$(CUTLASS_PATH)/g/build/include \
 	-I/usr/local/cuda/include \
@@ -40,9 +40,9 @@ cutlass.cubin: kern.cu
 	-x cu -c $^ -o $@ 
 
 basic_gemm: basic_gemm.cu cutlassAdapters.so cutlass.cubin
-	/usr/local/cuda/bin/nvcc \
+	/usr/local/cuda/bin/nvcc  \
 	-I$(CUTLASS_PATH)/include \
-	-I$(CUTLASS_PATH)/examples/00_basic_gemm \
+	-I$(CUTLASS_PATH)/../kaasComplex \
 	-I$(CUTLASS_PATH)/examples/common \
 	-I$(CUTLASS_PATH)/build/include \
 	-I/usr/local/cuda/include \

@@ -13,3 +13,6 @@ Our goal is to generate a usable cubin library with the kernels we want along wi
     ./build.sh
 
 This should generate out.cubin which contains the compiled kernel from test.cu.
+
+# Two submodules
+cutlass is from forked repo, and cutlass-src is from nvidia repo.

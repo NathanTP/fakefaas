@@ -73,4 +73,5 @@ def testJacobi(N, iters):
         cuda.memcpy_dtoh(x, x_d)
         print(x)
 
-testJacobi(512, 1000)
+# testJacobi(512, 1000)
+mod = cuda.module_from_file("jacobi.ptx")

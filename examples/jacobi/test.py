@@ -8,8 +8,8 @@ import os
 ROWS_PER_CTA = 8
 
 def loadKerns():
-    mod = cuda.module_from_file("jacobi.cubin")
-    jacobiKern = mod.get_function("JacobiMethodOuter")
+    mod = cuda.module_from_file("jacobi.ptx")
+    jacobiKern = mod.get_function("JacobiMethodAllIter")
     jacobiKern.prepare("PPiPPPi")
 
     return jacobiKern
@@ -73,5 +73,6 @@ def testJacobi(N, iters):
         cuda.memcpy_dtoh(x, x_d)
         print(x)
 
-# testJacobi(512, 1000)
-mod = cuda.module_from_file("jacobi.ptx")
+testJacobi(512, 1000)
+# mod = cuda.module_from_file("jacobi.ptx")
+# kern = loadKerns()

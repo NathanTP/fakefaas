@@ -56,9 +56,7 @@ __device__ double atomicAdd(double *address, double val) {
 }
 #endif
 
-static __global__ void JacobiMethod(const float *A, const double *b,
-                                    const float conv_threshold, double *x,
-                                    double *x_new, double *sum) {
+static __global__ void JacobiMethod(const float *A, const double *b, int n, double *x, double *x_new, double *sum) {
   // Handle to thread block group
   cg::thread_block cta = cg::this_thread_block();
   __shared__ double x_shared[N_ROWS];  // N_ROWS == n
@@ -126,291 +124,49 @@ static __global__ void JacobiMethod(const float *A, const double *b,
   }
 }
 
-// Thread block size for finalError kernel should be multiple of 32
-static __global__ void finalError(double *x, double *g_sum) {
-  // Handle to thread block group
-  cg::thread_block cta = cg::this_thread_block();
-  extern __shared__ double warpSum[];
-  double sum = 0.0;
-
-  int globalThreadId = blockIdx.x * blockDim.x + threadIdx.x;
-
-  for (int i = globalThreadId; i < N_ROWS; i += blockDim.x * gridDim.x) {
-    double d = x[i] - 1.0;
-    sum += fabs(d);
-  }
-
-  cg::thread_block_tile<32> tile32 = cg::tiled_partition<32>(cta);
-
-  for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
-    sum += tile32.shfl_down(sum, offset);
-  }
-
-  if (tile32.thread_rank() == 0) {
-    warpSum[threadIdx.x / warpSize] = sum;
-  }
-
-  cg::sync(cta);
-
-  double blockSum = 0.0;
-  if (threadIdx.x < (blockDim.x / warpSize)) {
-    blockSum = warpSum[threadIdx.x];
-  }
-
-  if (threadIdx.x < 32) {
-    for (int offset = tile32.size() / 2; offset > 0; offset /= 2) {
-      blockSum += tile32.shfl_down(blockSum, offset);
-    }
-    if (tile32.thread_rank() == 0) {
-      atomicAdd(g_sum, blockSum);
-    }
-  }
-}
-
-double JacobiMethodGpuCudaGraphExecKernelSetParams(
-    const float *A, const double *b, const float conv_threshold,
-    const int max_iter, double *x, double *x_new, cudaStream_t stream) {
-  // CTA size
-  dim3 nthreads(256, 1, 1);
-  // grid size
-  dim3 nblocks((N_ROWS / ROWS_PER_CTA) + 2, 1, 1);
-  cudaGraph_t graph;
-  cudaGraphExec_t graphExec = NULL;
-
-  double sum = 0.0;
-  double *d_sum = NULL;
-  checkCudaErrors(cudaMalloc(&d_sum, sizeof(double)));
-
-  std::vector<cudaGraphNode_t> nodeDependencies;
-  cudaGraphNode_t memcpyNode, jacobiKernelNode, memsetNode;
-  cudaMemcpy3DParms memcpyParams = {0};
-  cudaMemsetParams memsetParams = {0};
-
-  memsetParams.dst = (void *)d_sum;
-  memsetParams.value = 0;
-  memsetParams.pitch = 0;
-  // elementSize can be max 4 bytes, so we take sizeof(float) and width=2
-  memsetParams.elementSize = sizeof(float);
-  memsetParams.width = 2;
-  memsetParams.height = 1;
-
-  checkCudaErrors(cudaGraphCreate(&graph, 0));
-  checkCudaErrors(
-      cudaGraphAddMemsetNode(&memsetNode, graph, NULL, 0, &memsetParams));
-  nodeDependencies.push_back(memsetNode);
-
-  cudaKernelNodeParams NodeParams0, NodeParams1;
-  NodeParams0.func = (void *)JacobiMethod;
-  NodeParams0.gridDim = nblocks;
-  NodeParams0.blockDim = nthreads;
-  NodeParams0.sharedMemBytes = 0;
-  void *kernelArgs0[6] = {(void *)&A, (void *)&b,     (void *)&conv_threshold,
-                          (void *)&x, (void *)&x_new, (void *)&d_sum};
-  NodeParams0.kernelParams = kernelArgs0;
-  NodeParams0.extra = NULL;
-
-  checkCudaErrors(
-      cudaGraphAddKernelNode(&jacobiKernelNode, graph, nodeDependencies.data(),
-                             nodeDependencies.size(), &NodeParams0));
-
-  nodeDependencies.clear();
-  nodeDependencies.push_back(jacobiKernelNode);
-
-  memcpyParams.srcArray = NULL;
-  memcpyParams.srcPos = make_cudaPos(0, 0, 0);
-  memcpyParams.srcPtr = make_cudaPitchedPtr(d_sum, sizeof(double), 1, 1);
-  memcpyParams.dstArray = NULL;
-  memcpyParams.dstPos = make_cudaPos(0, 0, 0);
-  memcpyParams.dstPtr = make_cudaPitchedPtr(&sum, sizeof(double), 1, 1);
-  memcpyParams.extent = make_cudaExtent(sizeof(double), 1, 1);
-  memcpyParams.kind = cudaMemcpyDeviceToHost;
-
-  checkCudaErrors(
-      cudaGraphAddMemcpyNode(&memcpyNode, graph, nodeDependencies.data(),
-                             nodeDependencies.size(), &memcpyParams));
-
-  checkCudaErrors(cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0));
-
-  NodeParams1.func = (void *)JacobiMethod;
-  NodeParams1.gridDim = nblocks;
-  NodeParams1.blockDim = nthreads;
-  NodeParams1.sharedMemBytes = 0;
-  void *kernelArgs1[6] = {(void *)&A,     (void *)&b, (void *)&conv_threshold,
-                          (void *)&x_new, (void *)&x, (void *)&d_sum};
-  NodeParams1.kernelParams = kernelArgs1;
-  NodeParams1.extra = NULL;
-
-  int k = 0;
-  for (k = 0; k < max_iter; k++) {
-    checkCudaErrors(cudaGraphExecKernelNodeSetParams(
-        graphExec, jacobiKernelNode,
-        ((k & 1) == 0) ? &NodeParams0 : &NodeParams1));
-    checkCudaErrors(cudaGraphLaunch(graphExec, stream));
-    checkCudaErrors(cudaStreamSynchronize(stream));
-
-    if (sum <= conv_threshold) {
-      checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream));
-      nblocks.x = (N_ROWS / nthreads.x) + 1;
-      size_t sharedMemSize = ((nthreads.x / 32) + 1) * sizeof(double);
-      if ((k & 1) == 0) {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x_new, d_sum);
-      } else {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x, d_sum);
-      }
-
-      checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double),
-                                      cudaMemcpyDeviceToHost, stream));
-      checkCudaErrors(cudaStreamSynchronize(stream));
-      printf("GPU iterations : %d\n", k + 1);
-      printf("GPU error : %.3e\n", sum);
-      break;
-    }
-  }
-
-  checkCudaErrors(cudaFree(d_sum));
-  return sum;
-}
-
-double JacobiMethodGpuCudaGraphExecUpdate(const float *A, const double *b,
-                                          const float conv_threshold,
-                                          const int max_iter, double *x,
-                                          double *x_new, cudaStream_t stream) {
-  // CTA size
-  dim3 nthreads(256, 1, 1);
-  // grid size
-  dim3 nblocks((N_ROWS / ROWS_PER_CTA) + 2, 1, 1);
-  cudaGraph_t graph;
-  cudaGraphExec_t graphExec = NULL;
-
-  double sum = 0.0;
-  double *d_sum;
-  checkCudaErrors(cudaMalloc(&d_sum, sizeof(double)));
-
-  int k = 0;
-  for (k = 0; k < max_iter; k++) {
-    checkCudaErrors(
-        cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-    checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream));
-    if ((k & 1) == 0) {
-      JacobiMethod<<<nblocks, nthreads, 0, stream>>>(A, b, conv_threshold, x,
-                                                     x_new, d_sum);
-    } else {
-      JacobiMethod<<<nblocks, nthreads, 0, stream>>>(A, b, conv_threshold,
-                                                     x_new, x, d_sum);
-    }
-    checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double),
-                                    cudaMemcpyDeviceToHost, stream));
-    checkCudaErrors(cudaStreamEndCapture(stream, &graph));
-
-    if (graphExec == NULL) {
-      checkCudaErrors(cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0));
-    } else {
-      cudaGraphExecUpdateResult updateResult_out;
-      checkCudaErrors(
-          cudaGraphExecUpdate(graphExec, graph, NULL, &updateResult_out));
-      if (updateResult_out != cudaGraphExecUpdateSuccess) {
-        if (graphExec != NULL) {
-          checkCudaErrors(cudaGraphExecDestroy(graphExec));
-        }
-        printf("k = %d graph update failed with error - %d\n", k,
-               updateResult_out);
-        checkCudaErrors(cudaGraphInstantiate(&graphExec, graph, NULL, NULL, 0));
-      }
-    }
-    checkCudaErrors(cudaGraphLaunch(graphExec, stream));
-    checkCudaErrors(cudaStreamSynchronize(stream));
-
-    if (sum <= conv_threshold) {
-      checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream));
-      nblocks.x = (N_ROWS / nthreads.x) + 1;
-      size_t sharedMemSize = ((nthreads.x / 32) + 1) * sizeof(double);
-      if ((k & 1) == 0) {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x_new, d_sum);
-      } else {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x, d_sum);
-      }
-
-      checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double),
-                                      cudaMemcpyDeviceToHost, stream));
-      checkCudaErrors(cudaStreamSynchronize(stream));
-      printf("GPU iterations : %d\n", k + 1);
-      printf("GPU error : %.3e\n", sum);
-      break;
-    }
-  }
-
-  checkCudaErrors(cudaFree(d_sum));
-  return sum;
-}
-
-static __global__ void JacobiMethodOuter(const float *A, const double *b,
-                                    const float conv_threshold, double *x,
-                                    double *x_new, double *sum) {
+extern "C"
+__global__ void JacobiMethodOuter(const float *A, const double *b,
+                                    int n, double *x,
+                                    double *x_new, double *sum, const int max_iter) {
   dim3 nthreads(256, 1, 1);
   // grid size
   dim3 nblocks((N_ROWS / ROWS_PER_CTA) + 2, 1, 1);
 
-  for (int k = 0; k < 30000; k++) {
+  for (int k = 0; k < max_iter; k++) {
     *sum = 0;
     if ((k & 1) == 0) {
-      JacobiMethod<<<nblocks, nthreads, 0>>>(A, b, conv_threshold, x,
+      JacobiMethod<<<nblocks, nthreads, 0>>>(A, b, N_ROWS, x,
                                                  x_new, sum);
     } else {
-      JacobiMethod<<<nblocks, nthreads, 0>>>(A, b, conv_threshold,
+      JacobiMethod<<<nblocks, nthreads, 0>>>(A, b, N_ROWS,
                                                  x_new, x, sum);
     }
     __syncthreads();
   }
 }
 
-double JacobiMethodGpu(const float *A, const double *b,
-                       const float conv_threshold, const int max_iter,
-                       double *x, double *x_new, cudaStream_t stream) {
-  // CTA size
-  dim3 nthreads(256, 1, 1);
-  // grid size
-  dim3 nblocks((N_ROWS / ROWS_PER_CTA) + 2, 1, 1);
+// double JacobiMethodGpu(const float *A, const double *b,
+//                        const float conv_threshold, const int max_iter,
+//                        double *x, double *x_new, cudaStream_t stream) {
+//   // CTA size
+//   dim3 nthreads(256, 1, 1);
+//   // grid size
+//   dim3 nblocks((N_ROWS / ROWS_PER_CTA) + 2, 1, 1);
 
-  double sum = 0.0;
-  double *d_sum;
-  checkCudaErrors(cudaMalloc(&d_sum, sizeof(double)));
-  int k = 0;
+//   double sum = 0.0;
+//   double *d_sum;
+//   checkCudaErrors(cudaMalloc(&d_sum, sizeof(double)));
+//   int k = 0;
 
-  JacobiMethodOuter<<<1, 1>>>(A, b, conv_threshold, x, x_new, d_sum);
-  /* for (k = 0; k < max_iter; k++) { */
-  /*   checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream)); */
-  /*   if ((k & 1) == 0) { */
-  /*     JacobiMethod<<<nblocks, nthreads, 0, stream>>>(A, b, conv_threshold, x, */
-  /*                                                    x_new, d_sum); */
-  /*   } else { */
-  /*     JacobiMethod<<<nblocks, nthreads, 0, stream>>>(A, b, conv_threshold, */
-  /*                                                    x_new, x, d_sum); */
-  /*   } */
-  /* } */
-    checkCudaErrors(cudaMemcpy(&sum, d_sum, sizeof(double), cudaMemcpyDeviceToHost));
-    /* checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double), */
-    /*                                 cudaMemcpyDeviceToHost, stream)); */
-    /* checkCudaErrors(cudaStreamSynchronize(stream)); */
+//   JacobiMethodOuter<<<1, 1>>>(A, b, conv_threshold, x, x_new, d_sum, max_iter);
+//   checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream));
+//   checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double),
+//                               cudaMemcpyDeviceToHost, stream));
+//   checkCudaErrors(cudaStreamSynchronize(stream));
 
-    /* if (sum <= conv_threshold) { */
-      checkCudaErrors(cudaMemsetAsync(d_sum, 0, sizeof(double), stream));
-      nblocks.x = (N_ROWS / nthreads.x) + 1;
-      size_t sharedMemSize = ((nthreads.x / 32) + 1) * sizeof(double);
-      if ((k & 1) == 0) {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x_new, d_sum);
-      } else {
-        finalError<<<nblocks, nthreads, sharedMemSize, stream>>>(x, d_sum);
-      }
+//   printf("GPU iterations : %d\n", k + 1);
+//   printf("GPU error : %.3e\n", sum);
 
-      checkCudaErrors(cudaMemcpyAsync(&sum, d_sum, sizeof(double),
-                                      cudaMemcpyDeviceToHost, stream));
-      checkCudaErrors(cudaStreamSynchronize(stream));
-      printf("GPU iterations : %d\n", k + 1);
-      printf("GPU error : %.3e\n", sum);
-      /* break; */
-    /* } */
-  /* } */
-
-  checkCudaErrors(cudaFree(d_sum));
-  return sum;
-}
+//   checkCudaErrors(cudaFree(d_sum));
+//   return sum;
+// }

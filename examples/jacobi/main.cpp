@@ -45,18 +45,6 @@
 #include <stdlib.h>
 #include "jacobi.h"
 
-// Run the Jacobi method for A*x = b on GPU with CUDA Graph -
-// cudaGraphExecKernelNodeSetParams().
-extern double JacobiMethodGpuCudaGraphExecKernelSetParams(
-    const float *A, const double *b, const float conv_threshold,
-    const int max_iter, double *x, double *x_new, cudaStream_t stream);
-
-// Run the Jacobi method for A*x = b on GPU with Instantiated CUDA Graph Update
-// API - cudaGraphExecUpdate().
-extern double JacobiMethodGpuCudaGraphExecUpdate(
-    const float *A, const double *b, const float conv_threshold,
-    const int max_iter, double *x, double *x_new, cudaStream_t stream);
-
 // Run the Jacobi method for A*x = b on GPU without CUDA Graph.
 extern double JacobiMethodGpu(const float *A, const double *b,
                               const float conv_threshold, const int max_iter,
@@ -85,7 +73,7 @@ int main(int argc, char **argv) {
     exit(EXIT_SUCCESS);
   }
 
-  int gpumethod = 0;
+  int gpumethod = 2;
   if (checkCmdLineFlag(argc, (const char **)argv, "gpumethod")) {
     gpumethod = getCmdLineArgumentInt(argc, (const char **)argv, "gpumethod");
 
@@ -154,13 +142,9 @@ int main(int argc, char **argv) {
   sdkStartTimer(&timerGpu);
 
   double sumGPU = 0.0;
-  if (gpumethod == 0) {
-    sumGPU = JacobiMethodGpuCudaGraphExecKernelSetParams(
-        d_A, d_b, conv_threshold, max_iter, d_x, d_x_new, stream1);
-  } else if (gpumethod == 1) {
-    sumGPU = JacobiMethodGpuCudaGraphExecUpdate(
-        d_A, d_b, conv_threshold, max_iter, d_x, d_x_new, stream1);
-  } else if (gpumethod == 2) {
+
+  // main stuff to changed
+  if (gpumethod == 2) {
     sumGPU = JacobiMethodGpu(d_A, d_b, conv_threshold, max_iter, d_x, d_x_new,
                              stream1);
   }
@@ -175,6 +159,8 @@ int main(int argc, char **argv) {
 
   checkCudaErrors(cudaFreeHost(A));
   checkCudaErrors(cudaFreeHost(b));
+
+  printf("diff sum: %f\n", fabs(sum - sumGPU));
 
   printf("&&&& jacobiCudaGraphs %s\n",
          (fabs(sum - sumGPU) < conv_threshold) ? "PASSED" : "FAILED");

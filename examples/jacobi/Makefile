@@ -8,7 +8,7 @@ endif
 
 NVCC := nvcc 
 
-all: jacobi.ptx test
+all: jacobi.ptx
 
 jacobi.ptx: jacobi.cu
 	$(NVCC) $^ --ptx -gencode arch=compute_$(COMPUTE_CAP),code=sm_$(COMPUTE_CAP) \

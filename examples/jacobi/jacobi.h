@@ -28,6 +28,7 @@
 #ifndef JACOBI_H
 #define JACOBI_H
 
+// this variable is not used
 #define N_ROWS 512
 
 #endif

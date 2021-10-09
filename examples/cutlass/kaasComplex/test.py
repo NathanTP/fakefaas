@@ -3,12 +3,27 @@ import pycuda.autoinit  # NOQA
 import numpy as np
 from numpy import ctypeslib
 import ctypes as ct
+import libff as ff
+import libff.kv
+import libff.invoke
+import libff.kaas.kaasFF
+import libff.kaas as kaas
 
 # define complex ctype as a python class
 class complex(ct.Structure):
     _fields_ = [('real', ct.c_float), ('imag', ct.c_float)]
 
 c_complex_p = ct.POINTER(complex)
+
+def getCtx(remote=False):
+    if remote:
+        objStore = ff.kv.Redis(pwd=redisPwd, serialize=True)
+    else:
+        objStore = ff.kv.Local(copyObjs=False, serialize=False)
+
+    return libff.invoke.RemoteCtx(None, objStore)
+
+
 
 def loadKerns():
     mod = cuda.module_from_file("./cutlass.cubin")
@@ -86,6 +101,59 @@ def testKern():
 
     kern.prepared_call((1, 1, 1), (1, 1, 1), arg.contents)
 
+def testSgemmKaas(M, N, K, alpha, beta):
+    lda = M
+    ldb = K
+    ldc = M
+
+    libffCtx = getCtx(remote=False)
+
+    rng = np.random.default_rng(5)
+    #a = rng.random((M, K), dtype=np.float32)
+    #a = np.arange(M * K, dtype=np.float32)
+    #a = np.reshape(a, (M, K))
+    #b = rng.random((K, N), dtype=np.float32)
+    #c = np.zeros(shape=(M, N), dtype=np.float32)
+    a = np.asfortranarray(rng.random((M, K), dtype=np.float32) + rng.random((M, K), dtype=np.float32) * (1j))
+    b = np.asfortranarray(rng.random((K, N), dtype=np.float32) + rng.random((K, N), dtype=np.float32) * (1j))
+    #c = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.csingle))
+    c = np.asfortranarray(rng.random((M, N), dtype=np.float32) + rng.random((M, N), dtype=np.float32) * (1j))
+
+    #print(c)
+
+    #a = np.asfortranarray(a)
+    #b = np.asfortranarray(b)
+
+    getArg, getDims = loadAdapter()
+
+    cfg = getDims(M, N, K).contents
+    grid = (cfg.gridX, cfg.gridY, cfg.gridZ)
+    block = (cfg.blockX, cfg.blockY, cfg.blockZ)
+
+
+    smem = cfg.smem_size
+
+    libffCtx.kv.put('a', a)
+    aBuf = kaas.bufferSpec('a', a.nbytes)
+
+    libffCtx.kv.put('b', b)
+    bBuf = kaas.bufferSpec('b', b.nbytes)
+
+    libffCtx.kv.put('c', c)
+    cBuf = kaas.bufferSpec('c', c.nbytes)
+    literals = [kaas.literalSpec('f', alpha), kaas.literalSpec('f', beta),
+                kaas.literalSpec('f', M), kaas.literalSpec('f', N), kaas.literalSpec('f', K), kaas.literalSpec('f', lda), kaas.literalSpec('f', ldb), kaas.literalSpec('f', ldc)]
+    firstKern = kaas.kernelSpec(kaas.builtins["complexCutlass"], "complexGemm0", grid, block, sharedSize=smem, arguments=[(aBuf, 'i'), (bBuf, 'i'), (cBuf, 'o')], literals=literals)
+
+    req = kaas.kaasReqDense([firstKern])
+    kaasHandle = kaas.kaasFF.getHandle("direct", libffCtx)
+    kaasHandle.Invoke(req)
+
+    c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.csingle)
+    c = np.reshape(c, (M, N), order='F')
+    #print(c.shape)
+    print(c)
+
 
 def testSgemm(M, N, K, alpha, beta):
     lda = M
@@ -117,11 +185,14 @@ def testSgemm(M, N, K, alpha, beta):
     print("Block is: ", block)
     print("Smem Size is: ", cfg.smem_size)
 
+    thing =ct.cast(int(a_d), c_complex_p)
+    print(type(thing))
+
     params = getArg(M, N, K, alpha,
                     ct.cast(int(a_d), c_complex_p), lda,
                     ct.cast(int(b_d), c_complex_p), ldb,
                     beta,
-                    ct.cast(int(c_d), c_complex_p), ldc)            
+                    ct.cast(int(c_d), c_complex_p), ldc)
 
     cutlassKern.prepared_call(grid, block, params.contents, shared_size=cfg.smem_size)
 
@@ -157,4 +228,5 @@ def testSgemm(M, N, K, alpha, beta):
 # a = complex(1.0, 0.0)
 # b = complex(0.0, 0.0)
 # testSgemm(128, 128, 128, a, b)
+testSgemmKaas(128, 64, 20, 1, 0)
 testSgemm(128, 64, 20, 1, 0)

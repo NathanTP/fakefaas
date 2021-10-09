@@ -477,7 +477,9 @@ def kaasServeInternal(req, ctx):
     # finds all the unique buffers in the request
     bCache.makeRoomForBufs(req.bufferMap.values())
 
-    visibleOutputs = []
+    # when nIter > 1, we may see the same output multiple times, but we only
+    # want to report it once.
+    visibleOutputs = set()
     for i in range(req.nIter):
         for kSpec in req.kernels:
             kern = kCache.get(kSpec)
@@ -498,7 +500,7 @@ def kaasServeInternal(req, ctx):
 
                 if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                     bCache.dirty(argBuf.key)
-                    visibleOutputs.append(argBuf.key)
+                    visibleOutputs.add(argBuf.key)
 
                 arguments.append(argBuf)
 

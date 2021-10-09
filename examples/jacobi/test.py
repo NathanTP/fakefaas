@@ -10,7 +10,7 @@ ROWS_PER_CTA = 8
 def loadKerns():
     mod = cuda.module_from_file("jacobi.ptx")
     jacobiKern = mod.get_function("JacobiMethod")
-    jacobiKern.prepare("PPiPPP")
+    jacobiKern.prepare("iPPPPP")
 
     return jacobiKern
 
@@ -84,12 +84,12 @@ def testJacobi(N, iters):
     print("Block is: ", block)
 
     for k in range(iters):
-        if k == iters-1:
-            cuda.memset_d8(d_d, 0, d.nbytes)
+        # if k == iters-1:
+        #     cuda.memset_d8(d_d, 0, d.nbytes)
         if k % 2 == 0:
-            jacobiKern.prepared_call(grid, block, A_d, b_d, N, x_d, x_new_d, d_d, shared_size=8*N)
+            jacobiKern.prepared_call(grid, block, N, A_d, b_d, x_d, x_new_d, d_d, shared_size=8*N)
         else:
-            jacobiKern.prepared_call(grid, block, A_d, b_d, N, x_new_d, x_d, d_d, shared_size=8*N)
+            jacobiKern.prepared_call(grid, block, N, A_d, b_d, x_new_d, x_d, d_d, shared_size=8*N)
 
     if iters % 2 == 0:
         cuda.memcpy_dtoh(x_new, x_new_d)
@@ -114,4 +114,4 @@ def testJacobi(N, iters):
     print("CUDA error is:")
     print(d)
 
-testJacobi(256, 3000)
+testJacobi(512, 3000)

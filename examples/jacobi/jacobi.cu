@@ -57,10 +57,11 @@ __device__ double atomicAdd(double *address, double val) {
 #endif
 
 extern "C"
-__global__ void JacobiMethod(const float *A, const double *b,
-                                    const int nrows, double *x,
+__global__ void JacobiMethod(const int nrows, const float *A, const double *b,
+                                    double *x,
                                     double *x_new, double *sum) {
   // Handle to thread block group
+  *sum = 0.0;
   cg::thread_block cta = cg::this_thread_block();
   extern __shared__ double x_shared[];  // N_ROWS == n
   __shared__ double b_shared[ROWS_PER_CTA + 1];

@@ -214,6 +214,8 @@ class kaasFunc():
         args = literalVals + dAddrs
 
         if self.fName == "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEEfNS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSD_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_fNSD_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISI_EELi4EEENSA_INSB_ILi8ELi128EEEfSE_Li0ENSF_INSG_ILi128ELi8EEELi256ELi1EEELi1EEENSK_ISP_fSE_Li0ESR_Li4EEEfSE_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEEfSL_fSE_fSE_NSV_13MmaSimtPolicyINSB_ILi4ELi8EEENSD_19RowMajorInterleavedILi2EEENS6_ILi4ELi4ELi1EEEEELi1ELNS_16ComplexTransformE0ELS14_0EbEENSB_ILi4ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterIffLi4ELNS_15FloatRoundStyleE2EEES1B_bEENS_8epilogue11threadblock8EpilogueIS7_S15_Li1ENS1E_22PredicatedTileIteratorINS1E_26OutputTileOptimalThreadMapINS1E_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1I_ILi1ELi4ELi2ELi1ELi8EEELi256ELi1ELi32EEEfEENS1D_4warp20FragmentIteratorSimtISX_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEEfSL_fSE_fSE_NS_4arch13OpMultiplyAddEbEESE_S13_EENS1N_16TileIteratorSimtISX_S1U_fSE_S13_EENS1E_18SharedLoadIteratorINS1L_18CompactedThreadMapEfLi4EEENS1D_6thread17LinearCombinationIfLi1EffLNS21_9ScaleType4KindE0ELS1A_2EEENSB_ILi0ELi17EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE":
+            print("IM ZEROING: ", bufs[2].name)
+            cuda.memset_d8(bufs[2].dbuf, 0, bufs[2].size)
             params = cutlass.parseSgemmArgs(literalVals, dAddrs, kCache.cutlassAdapter)
             self.func.prepare("320s")
             return self.func.prepared_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
@@ -467,49 +469,50 @@ def kaasServeInternal(req, ctx):
     bCache.makeRoomForBufs(req.bufferMap.values())
 
     visibleOutputs = []
-    for kSpec in req.kernels:
-        kern = kCache.get(kSpec)
+    for i in range(req.nIter):
+        for kSpec in req.kernels:
+            kern = kCache.get(kSpec)
 
-        specArgs = kSpec[7]
-        ioTypes = kSpec[8]
+            specArgs = kSpec[7]
+            ioTypes = kSpec[8]
 
-        arguments = []
-        for argName, ioType in zip(specArgs, ioTypes):
-            arg = req.bufferMap[argName]
-            if ioType == 'o':
-                argBuf = bCache.load(arg, overwrite=True)
-            else:
-                argBuf = bCache.load(arg)
+            arguments = []
+            for argName, ioType in zip(specArgs, ioTypes):
+                arg = req.bufferMap[argName]
+                if ioType == 'o':
+                    argBuf = bCache.load(arg, overwrite=True)
+                else:
+                    argBuf = bCache.load(arg)
 
-            if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
-                bCache.dirty(argBuf.key)
-                visibleOutputs.append(argBuf.key)
+                if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
+                    bCache.dirty(argBuf.key)
+                    visibleOutputs.append(argBuf.key)
 
-            arguments.append(argBuf)
+                arguments.append(argBuf)
 
-        kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
+            kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
 
-        for buf in arguments:
-            bCache.release(buf)
+            for buf in arguments:
+                bCache.release(buf)
 
-        # ***********************
-        # It turns out on the big models, cudaMM is dominant. We should measure
-        # it, but the overhead of extra evictions and stuff is unlikely to
-        # outweight the opportunity for buffer re-use. We just bzero stuff
-        # instead.
-        # ***********************
-        # # Don't bother waiting for the caching policy on temps, they will for
-        # # sure never be needed again. In the future we may avoid this to save
-        # # on cudaMalloc.
-        # for t in kSpec.temps:
-        #     bCache.drop(t.key)
-        #
-        # # For now, we assume we'll never re-use non-constant inputs. It's true
-        # # for current workloads but not in general. This saves us a bunch of
-        # # time spent evicting stuff.
-        # for bSpec in kSpec.inputs:
-        #     if not bSpec.const:
-        #         bCache.drop(bSpec.key)
+            # ***********************
+            # It turns out on the big models, cudaMM is dominant. We should measure
+            # it, but the overhead of extra evictions and stuff is unlikely to
+            # outweight the opportunity for buffer re-use. We just bzero stuff
+            # instead.
+            # ***********************
+            # # Don't bother waiting for the caching policy on temps, they will for
+            # # sure never be needed again. In the future we may avoid this to save
+            # # on cudaMalloc.
+            # for t in kSpec.temps:
+            #     bCache.drop(t.key)
+            #
+            # # For now, we assume we'll never re-use non-constant inputs. It's true
+            # # for current workloads but not in general. This saves us a bunch of
+            # # time spent evicting stuff.
+            # for bSpec in kSpec.inputs:
+            #     if not bSpec.const:
+            #         bCache.drop(bSpec.key)
 
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.

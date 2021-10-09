@@ -6,14 +6,14 @@ Lightly adapted by Nathan Pemberton
 
 # Quick Start
 
-Run `make` to compile `jacobi.ptx`, and then you can run `python test.py` to see the result.
+Run `make` to compile `jacobi.ptx`, and then you can run `python test.py` to see the result. \
 Make sure you have nvcc == 11.4!
 
 # Explanation
 
-Jacobi method tries to solve A*x = b.
-Jacobi kernel takes in five inputs: N(numRows), A, b, x(output when iters is odd), x_new(output when iters is even), d(error)
-Our python test takes two inputs: N(numRows), iters(max iterations)
+Jacobi method tries to solve A*x = b. \
+Jacobi kernel takes in five inputs: N(numRows), A, b, x(output when iters is odd), x_new(output when iters is even), d(error) \
+Our python test takes two inputs: N(numRows), iters(max iterations) \
 In each iteration, x and x_new is switched, so that's why there are two separate calls for the kernel.
 
 ## Further Reference

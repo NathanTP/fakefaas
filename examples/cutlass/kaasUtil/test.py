@@ -104,9 +104,14 @@ def testSgemmKaas(M, N, K, alpha, beta):
     libffCtx = getCtx(remote=False)
 
     rng = np.random.default_rng(0)
-    a = rng.random((M, K), dtype=np.float32)
+    #a = rng.random((M, K), dtype=np.float32)
+    a = np.arange(M * K, dtype=np.float32)
+    a = np.reshape(a, (M, K))
     b = rng.random((K, N), dtype=np.float32)
     c = np.zeros(shape=(M, N), dtype=np.float32)
+
+    a = np.asfortranarray(a)
+    b = np.asfortranarray(b)
 
     getArg, getDims = loadAdapter()
 
@@ -128,11 +133,12 @@ def testSgemmKaas(M, N, K, alpha, beta):
                 kaas.literalSpec('f', M), kaas.literalSpec('f', N), kaas.literalSpec('f', K), kaas.literalSpec('f', lda), kaas.literalSpec('f', ldb), kaas.literalSpec('f', ldc)]
     firstKern = kaas.kernelSpec(kaas.builtins["cutlass"], "sgemm0", grid, block, sharedSize=smem, arguments=[(aBuf, 'i'), (bBuf, 'i'), (cBuf, 'o')], literals=literals)
 
-    req = kaas.kaasReq([firstKern])
+    req = kaas.kaasReqDense([firstKern])
     kaasHandle = kaas.kaasFF.getHandle("direct", libffCtx)
-    kaasHandle.Invoke(req.toDict())
+    kaasHandle.Invoke(req)
 
     c = np.frombuffer(libffCtx.kv.get('c'), dtype=np.float32)
+    c = np.reshape(c, (M, N), order='F')
     print(c)
 
 
@@ -145,9 +151,13 @@ def testSgemm(M, N, K, alpha, beta):
     refKern, cutlassKern = loadKerns()
 
     rng = np.random.default_rng(0)
-    a = np.asfortranarray(rng.random((M, K), dtype=np.float32))
+    #a = np.asfortranarray(rng.random((M, K), dtype=np.float32))
+    a = np.arange(M * K, dtype=np.float32)
+    a = np.reshape(a, (M, K))
     b = np.asfortranarray(rng.random((K, N), dtype=np.float32))
     c = np.asfortranarray(np.zeros(shape=(M, N), dtype=np.float32))
+
+    a = np.reshape(a, (M, K), order='F')
 
     a_d = cuda.mem_alloc(a.nbytes)
     cuda.memcpy_htod(a_d, a)
@@ -210,5 +220,6 @@ def testSgemm(M, N, K, alpha, beta):
     print(np_res - c)
 
 
+testSgemmKaas(128, 128, 128, 1.0, 0.0)
 testSgemm(128, 128, 128, 1.0, 0.0)
 #testSgemm(10000, 8000, 10000, 1.0, 0.0) #-> 1.12 seconds

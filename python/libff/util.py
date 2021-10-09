@@ -209,7 +209,8 @@ def testenv(testName, mode):
 
     try:
         # Redis takes a sec to boot up
-        time.sleep(0.5)
+        # time.sleep(0.5)
+        time.sleep(1)
         yield
     except redis.exceptions.ConnectionError as e:
         redisProc.terminate()

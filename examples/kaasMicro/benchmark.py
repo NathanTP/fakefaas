@@ -11,12 +11,13 @@ import sys
 from datetime import datetime
 
 # Just to get its exception type
-import redis
+# import redis
 
 import libff as ff
 import libff.kv
 import libff.invoke
 import libff.kaas
+import libff.kaas.kaasFF
 
 import pygemm
 import pygemm.kaas
@@ -24,9 +25,10 @@ import pygemm.kaas
 
 def startKaas(ffCtx, mode='direct'):
     """Start the kaas server and run some trivial computation to ensure the kaas server is warm."""
-    kaasHandle = libff.kaas.getHandle(mode, ffCtx)
-    kern = libff.kaas.kernelSpec(pygemm.kernsDir / 'noop.cubin', 'noop', (1,1,1), (1,1,1))
-    kaasHandle.Invoke(libff.kaas.kaasReq([kern]).toDict())
+    kaasHandle = libff.kaas.kaasFF.getHandle(mode, ffCtx)
+    kern = libff.kaas.kernelSpec(pygemm.kernsDir / 'noop.cubin', 'noop', (1, 1, 1), (1, 1, 1))
+    req = libff.kaas.kaasReqDense([kern])
+    kaasHandle.Invoke(req)
 
 
 def cleanStats(rawStats, config):
@@ -125,8 +127,8 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--niter", type=int, default=5, help="Number of experiment iterations to run for the warm results")
     parser.add_argument("-p", "--preprocess", default=None,
             help="Preprocessing time. This may be either a number of ms of preprocessing time to simulate or 'high'/'low' to use a preconfigured time as a fraction of problem size. If not specified, no preprocessing will be simulated.")
-    parser.add_argument("--preinline", action='store_true', 
-            help="For the FaaS client, perform preprocessing in the same function, otherwise preprocessing happens in a separate function.") 
+    parser.add_argument("--preinline", action='store_true',
+            help="For the FaaS client, perform preprocessing in the same function, otherwise preprocessing happens in a separate function.")
     parser.add_argument("--output", default='results.json', help="File name to write results to")
 
     args = parser.parse_args()
@@ -136,7 +138,7 @@ if __name__ == "__main__":
     elif args.preprocess.isdigit():
         preproc = int(args.preprocess)
 
-    if args.size == 'small': 
+    if args.size == 'small':
         size = 1024
         if args.preprocess is not None and not args.preprocess.isdigit():
             # XXX ideally we'd actually calculate this somehow, but for now it's just hard-coded
@@ -156,18 +158,23 @@ if __name__ == "__main__":
                 # roughly 25% of the model runtime
                 preproc = 9500
 
-    if args.mode == 'process':
-        redisProc = sp.Popen(['redis-server', '../../redis.conf'], stdout=sp.PIPE, text=True)
-
-    try:
+    with libff.testenv('simple', args.mode):
         benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter,
                 args.worker, outPath=args.output,
                 preprocessTime=preproc, preInline=args.preinline)
-    except redis.exceptions.ConnectionError as e:
-        print("Redis error:")
-        print(e)
-        redisProc.terminate()
-        print(redisProc.stdout.read())
 
-    if args.mode == 'process':
-        redisProc.terminate()
+    # if args.mode == 'process':
+    #     redisProc = sp.Popen(['redis-server', '../../python/libff/redis.conf'], stdout=sp.PIPE, text=True)
+    #
+    # try:
+    #     benchmark("_".join([args.size, args.mode, args.worker]), 4, size, args.mode, args.niter,
+    #             args.worker, outPath=args.output,
+    #             preprocessTime=preproc, preInline=args.preinline)
+    # except redis.exceptions.ConnectionError as e:
+    #     print("Redis error:")
+    #     print(e)
+    #     redisProc.terminate()
+    #     print(redisProc.stdout.read())
+    #
+    # if args.mode == 'process':
+    #     redisProc.terminate()

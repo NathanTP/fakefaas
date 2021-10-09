@@ -1,4 +1,5 @@
 import libff.kaas
+import libff.kaas.kaasFF
 
 from .util import *
 
@@ -28,13 +29,13 @@ class mmFunc():
     def __init__(self, name, shape, libffCtx, kaasCtx, constB=None, stats=None):
         """Create a matmul function invoker. Shape should be the two matrix
         dimensions [(arows, acols), (brows, bcols)].
-        
+
         constB (a numpy array or kaas.bufferSpec) may be provided to associate
         a permanent B associated with this multiplier rather than a dynamic
         one."""
         self.name = name
         self.ffCtx = libffCtx
-        self.kHandle = kaasCtx 
+        self.kHandle = kaasCtx
         if stats is None:
             self.stats = ff.profCollection()
         else:
@@ -73,7 +74,7 @@ class mmFunc():
             self.blockDim = (threadBlock, threadBlock, 1)
             self.sharedSize = (2 * blockDim[0] * blockDim[1])*4
 
-       
+
     def getKernFunc(self, aData=None, bData=None, cData=None):
         """Returns the kernel function object for this multiplier. You can use
         this to compose larger operations. aData, bData, and cData may be:
@@ -94,11 +95,12 @@ class mmFunc():
 
         cBuf = self._bufArgToBuf(cData, 'c', self.cShape)
 
+        arguments = [(self.dimBuf, 'i'), (aBuf, 'i'), (bBuf, 'i'), (cBuf, 'o')]
+
         return libff.kaas.kernelSpec(kernsDir / 'gemm.cubin',
             mmKern,
             self.gridDim, self.blockDim, sharedSize=self.sharedSize,
-            inputs = [self.dimBuf, aBuf, bBuf],
-            outputs = [cBuf])
+            arguments=arguments)
 
 
     def invoke(self, aData=None, bData=None, cData=None):
@@ -108,11 +110,11 @@ class mmFunc():
         getKernFunc() for details of the data arguments."""
         kern = self.getKernFunc(aData, bData, cData)
 
-        req = libff.kaas.kaasReq([ kern ])
+        req = libff.kaas.kaasReqDense([kern])
         with libff.timer("t_client_invoke", self.stats):
-            self.kHandle.Invoke(req.toDict())
+            self.kHandle.Invoke(req)
 
-        return kern.outputs[0].name 
+        return kern.outputs[0].name
 
 
     def destroy(self):
@@ -151,10 +153,10 @@ class ChainedMults():
             for i,shape in enumerate(shapes):
                 if shape.a != prevShape:
                     raise RuntimeError("Invalid input shape for layer " + str(i) + " (" + str(shape.a) + ") previous layer output " + str(prevShape))
-                
+
                 constB = generateArr(shape.b)
                 self.bArrs.append(constB)
-                
+
                 prevShape = shape.c
         else:
             self.bArrs = bArrs
@@ -204,10 +206,10 @@ class ChainedMults():
         if self.preTime is not None:
             with ff.timer("t_preprocess", self.stats):
                 self.preFunc.Invoke({"input" : inBuf.name, "output" : inBuf.name, "processTime" : self.preTime})
-            
+
         with ff.timer("t_invoke", self.stats):
-            req = libff.kaas.kaasReq(kerns)
-            self.kHandle.Invoke(req.toDict())
+            req = libff.kaas.kaasReqDense(kerns)
+            self.kHandle.Invoke(req)
 
         if generatedInput:
             self.ffCtx.kv.delete(inBuf.name)
@@ -220,7 +222,7 @@ class ChainedMults():
             self.preFunc.getStats()
         return self.stats
 
-    
+
     def resetStats(self):
         if self.preTime is not None:
             self.preFunc.resetStats()
@@ -239,14 +241,14 @@ class benchClient():
         elements in one side of an array (benchClient works only with square
         matrices). sideLen must be a multiple of mmFunc.tileM. Each matmul in
         the chain will use one static array and one dynamic array.
-        
+
         rng: is used to generate inter-request times for invoke(). The current
         implementation uses synchronous requests, so this is really the delay
         after completion rather than a true inter-arrival period. it should be
         a function with no arguments that returns a wait time in ms. If rng is
         None, invokeDelayed and invoke are identical. You may use
         benchClient.poisson() or benchClient.zipf() to generate an rng.
-        
+
         Scale and depth must lead to reasonably sized matrices
         (mmFunc.matSizeA). The limits are:
             scale > (mmFunc.matSizeA * (1 + 2*depth))*4
@@ -267,7 +269,7 @@ class benchClient():
             self.stats = stats
         self.kvStats = self.stats.mod('kv')
 
-        self.kaas = libff.kaas.getHandle(mode, self.ff, stats=self.stats.mod('kaas'))
+        self.kaas = libff.kaas.kaasFF.getHandle(mode, self.ff, stats=self.stats.mod('kaas'))
 
         # Used to name any generated arrays
         self.nextArrayID = 0
@@ -386,7 +388,7 @@ class benchClient():
         with ff.timer("t_read_output", self.stats):
             res = getData(self.ff, self.lastRetKey, self.shapes[-1].c, stats=self.kvStats)
         return res
-        
+
 
     def destroy(self):
         self.func.destroy()

@@ -10,11 +10,14 @@ outFile.unlink(missing_ok=True)
 # there isn't all that much variation in practice.
 niter = 2
 
-modes = ['direct', 'process']
-clientTypes = ['kaas', 'faas', 'local']
-# sizes = ['small', 'large']
-sizes = ['small']
-preprocess = [None, 'low', 'high']
+# modes = ['direct', 'process']
+modes = ['process']
+# clientTypes = ['kaas', 'faas', 'local']
+clientTypes = ['kaas', 'faas']
+sizes = ['small', 'large']
+# sizes = ['small']
+preprocess = [None, 'low']
+# preprocess = [None, 'low', 'high']
 preInlineOpts = [ True, False ]
 
 paramIter = itertools.product(modes, clientTypes, sizes, preprocess, preInlineOpts)

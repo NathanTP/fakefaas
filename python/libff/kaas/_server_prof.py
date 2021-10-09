@@ -21,7 +21,7 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 #   - 1 metrics that will have little effect on performance
 #   - 2 synchronize cuda aggresively to get accurate measurements (hurts e2e
 #       perf)
-profLevel = 0
+profLevel = 1
 
 # This is a global reference to the current ff.profCollection (reset for each call)
 profs = None
@@ -153,13 +153,7 @@ class kaasBuf():
                 self.dbuf = cuda.mem_alloc(self.size)
                 profSync()
 
-            if self.hbuf is None:
-                logging.debug("Zeroing {} ({})".format(self.name, hex(int(self.dbuf))))
-                with ff.timer('t_zero', getProf(), final=False):
-                    cuda.memset_d8(self.dbuf, 0, self.size)
-                    profSync()
-
-            else:
+            if self.hbuf is not None:
                 logging.debug(f"Moving {self.size}B from host buffer '{self.name}' to device address 0x{hex(int(self.dbuf))}")
                 with ff.timer('t_htod', getProf(), final=False):
                     cuda.memcpy_htod(self.dbuf, self.hbuf)
@@ -201,11 +195,11 @@ class kaasBuf():
 
     def clear(self):
         logging.debug("Clearing existing buffer " + self.name)
-        # with ff.timer('t_zero', getProf(), final=False):
-        #     self.hbuf = None
-            # if self.onDevice:
-            #     cuda.memset_d8(self.dbuf, 0, self.size)
-            #     profSync()
+        with ff.timer('t_zero', getProf(), final=False):
+            self.hbuf = None
+            if self.onDevice:
+                cuda.memset_d8(self.dbuf, 0, self.size)
+                profSync()
 
 
 class kaasFunc():
@@ -412,15 +406,6 @@ class bufferCache():
             logging.debug("Loading from Cache: {}".format(name))
             updateProf('n_hostDHit', 1)
 
-            with ff.timer("t_bCacheLoad", getProf(), final=False):
-                if buf.onDevice:
-                    # with ff.timer('t_zero', None, final=False):
-                    cuda.memset_d8(buf.dbuf, 0, buf.size)
-                    profSync()
-
-                # if overwrite:
-                #     buf.clear()
-
             # Reset LRU
             if buf.onDevice:
                 self.policy.remove(buf)
@@ -532,55 +517,56 @@ def kaasServeInternal(req, ctx):
 
     invokeTimes = []
     visibleOutputs = []
-    for kSpec in req.kernels:
-        #XXX
-        with ff.timer("t_getKern", getProf(), final=False):
-            kern = kCache.get(kSpec)
 
-        specArgs = kSpec[7]
-        ioTypes = kSpec[8]
+    for i in range(req.nIter):
+        for kSpec in req.kernels:
+            with ff.timer("t_getKern", getProf(), final=False):
+                kern = kCache.get(kSpec)
 
-        arguments = []
-        for argName, ioType in zip(specArgs, ioTypes):
-            arg = req.bufferMap[argName]
-            with ff.timer("t_setupArgs", getProf(), final=False):
-                if ioType == 'o':
-                    argBuf = bCache.load(arg, overwrite=True)
-                else:
-                    argBuf = bCache.load(arg)
+            specArgs = kSpec[7]
+            ioTypes = kSpec[8]
 
-            if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
-                bCache.dirty(argBuf.key)
-                visibleOutputs.append(argBuf.key)
+            arguments = []
+            for argName, ioType in zip(specArgs, ioTypes):
+                arg = req.bufferMap[argName]
+                with ff.timer("t_setupArgs", getProf(), final=False):
+                    if ioType == 'o':
+                        argBuf = bCache.load(arg, overwrite=True)
+                    else:
+                        argBuf = bCache.load(arg)
 
-            arguments.append(argBuf)
+                if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
+                    bCache.dirty(argBuf.key)
+                    visibleOutputs.append(argBuf.key)
 
-        with ff.timer("t_invokeExternal", getProf(), final=False):
-            timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
-            profSync()
-        invokeTimes.append(timer)
+                arguments.append(argBuf)
 
-        for buf in arguments:
-            bCache.release(buf)
+            with ff.timer("t_invokeExternal", getProf(), final=False):
+                timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
+                profSync()
+            invokeTimes.append(timer)
 
-        # ***********************
-        # It turns out on the big models, cudaMM is dominant. We should measure
-        # it, but the overhead of extra evictions and stuff is unlikely to
-        # outweight the opportunity for buffer re-use. We just bzero stuff
-        # instead.
-        # ***********************
-        # # Don't bother waiting for the caching policy on temps, they will for
-        # # sure never be needed again. In the future we may avoid this to save
-        # # on cudaMalloc.
-        # for t in kSpec.temps:
-        #     bCache.drop(t.key)
-        #
-        # # For now, we assume we'll never re-use non-constant inputs. It's true
-        # # for current workloads but not in general. This saves us a bunch of
-        # # time spent evicting stuff.
-        # for bSpec in kSpec.inputs:
-        #     if not bSpec.const:
-        #         bCache.drop(bSpec.key)
+            for buf in arguments:
+                bCache.release(buf)
+
+            # ***********************
+            # It turns out on the big models, cudaMM is dominant. We should measure
+            # it, but the overhead of extra evictions and stuff is unlikely to
+            # outweight the opportunity for buffer re-use. We just bzero stuff
+            # instead.
+            # ***********************
+            # # Don't bother waiting for the caching policy on temps, they will for
+            # # sure never be needed again. In the future we may avoid this to save
+            # # on cudaMalloc.
+            # for t in kSpec.temps:
+            #     bCache.drop(t.key)
+            #
+            # # For now, we assume we'll never re-use non-constant inputs. It's true
+            # # for current workloads but not in general. This saves us a bunch of
+            # # time spent evicting stuff.
+            # for bSpec in kSpec.inputs:
+            #     if not bSpec.const:
+            #         bCache.drop(bSpec.key)
 
     # Make sure all outputs are visible externally (basically this merges our
     # private state into whatever consistency properties the KV gives us.

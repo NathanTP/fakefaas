@@ -8,8 +8,6 @@ else
 	COMPUTE_CAP:=35
 endif
 
-COMPUTE_CAP:=35
-
 all: cutlassAdapters.so cutlass.cubin basic_gemm
 
 cutlassAdapters.so: cutlassAdapters.cu

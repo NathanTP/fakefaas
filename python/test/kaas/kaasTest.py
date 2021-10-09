@@ -3,7 +3,7 @@ import math
 import sys
 import subprocess as sp
 from pprint import pprint
-import GPUtil
+# import GPUtil
 
 import time
 import pickle
@@ -93,6 +93,62 @@ def testLoop(mode='direct'):
 
     return (doubledArray, origArray)
 
+def testLoopJacobi(mode='direct'):
+    N = 512
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    rng = np.random.default_rng(40)
+    A = rng.random((N, N), dtype=np.float32)
+    fill_arr = np.sum(np.abs(A), axis=1)
+    np.fill_diagonal(A, fill_arr)
+    b = rng.random((N, 1), dtype=np.float64)
+
+    libffCtx.kv.put("A", A)
+    libffCtx.kv.put("b", b)
+
+    ABuf = kaas.bufferSpec('inpA', A.nbytes, key="A")
+    bBuf = kaas.bufferSpec('inpb', b.nbytes, key="b")
+    xnewBuf = kaas.bufferSpec('xnew', N*8)
+    xBuf = kaas.bufferSpec('x', N*8, ephemeral=True)
+    dBuf = kaas.bufferSpec('d', 8)
+
+    arguments1 = [(ABuf, 'i'), (bBuf, 'i'), (xBuf, 'o'), (xnewBuf, 'o'), (dBuf, 'o')]
+    arguments2 = [(ABuf, 'i'), (bBuf, 'i'), (xnewBuf, 'o'), (xBuf, 'o'), (dBuf, 'o')]
+
+    kern1 = kaas.kernelSpec(testPath / 'kerns' / 'jacobi.ptx',
+                           'JacobiMethod',
+                           (256, 1, 1), (66, 1, 1), 8*N,
+                           literals=[kaas.literalSpec('i', N)],
+                           arguments=arguments1)
+
+    kern2 = kaas.kernelSpec(testPath / 'kerns' / 'jacobi.ptx',
+                           'JacobiMethod',
+                           (256, 1, 1), (66, 1, 1), 8*N,
+                           literals=[kaas.literalSpec('i', N)],
+                           arguments=arguments2)
+
+    req = kaas.kaasReqDense([kern1, kern2], nIter=1500)
+
+    # This is just for the test, a real system would use libff to invoke the
+    # kaas server
+    kaasHandle.Invoke(req)
+
+    xnew = libffCtx.kv.get('xnew')
+    xnewArray = np.frombuffer(xnew, dtype=np.float64)
+    print(xnewArray)
+
+    d = libffCtx.kv.get('d')
+    dArray = np.frombuffer(d, dtype=np.float64)
+    print(dArray)
+
+    libffCtx.kv.delete("A")
+    libffCtx.kv.delete("b")
+    libffCtx.kv.delete("xnew")
+    libffCtx.kv.delete("d")
+    kaasHandle.Close()
+
+    return (xnewArray, d)
 
 def testStats(mode='direct'):
     stats = ff.util.profCollection()
@@ -497,6 +553,10 @@ if __name__ == "__main__":
     print("Loop Test:")
     with ff.testenv('simple', mode):
         testLoop(mode)
+
+    print("Jacobi Loop Test:")
+    with ff.testenv('simple', mode):
+        testLoopJacobi(mode)
 
     print("Double Test:")
     with ff.testenv('simple', mode):

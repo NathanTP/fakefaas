@@ -60,6 +60,40 @@ def runDoublify(kaasHandle, libffCtx, testArray=None):
     return (doubledArray, origArray)
 
 
+def testLoop(mode='direct'):
+    libffCtx = getCtx(remote=(mode == 'process'))
+    kaasHandle = kaas.kaasFF.getHandle(mode, libffCtx)
+
+    testArray = np.arange(16, dtype=np.float32)
+
+    origArray = testArray.copy()
+
+    libffCtx.kv.put("loopTestInput", testArray)
+
+    # doublify is in-place
+    arguments = [(kaas.bufferSpec('loopTestInput', testArray.nbytes), 'io')]
+
+    kern = kaas.kernelSpec(testPath / 'kerns' / 'libkaasMicro.cubin',
+                           'doublifyKern',
+                           (1, 1), (16, 1, 1),
+                           arguments=arguments)
+
+    req = kaas.kaasReqDense([kern], nIter=2)
+
+    # This is just for the test, a real system would use libff to invoke the
+    # kaas server
+    kaasHandle.Invoke(req)
+
+    doubledBytes = libffCtx.kv.get('loopTestInput')
+    doubledArray = np.frombuffer(doubledBytes, dtype=np.float32)
+    print(doubledArray)
+
+    libffCtx.kv.delete("loopTestInput")
+    kaasHandle.Close()
+
+    return (doubledArray, origArray)
+
+
 def testStats(mode='direct'):
     stats = ff.util.profCollection()
     libffCtx = getCtx(remote=(mode == 'process'))
@@ -453,10 +487,16 @@ if __name__ == "__main__":
     else:
         mode = sys.argv[1]
 
+    # testLoop('direct')
+
     if not (testPath / 'kerns' / 'libkaasMicro.cubin').exists():
         print("Test cubin not available, building now:")
         sp.call(["make"], cwd=(testPath / 'kerns'))
         print("libkaasMicro.cubin built sucessefully\n")
+
+    print("Loop Test:")
+    with ff.testenv('simple', mode):
+        testLoop(mode)
 
     print("Double Test:")
     with ff.testenv('simple', mode):

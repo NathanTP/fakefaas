@@ -17,4 +17,7 @@ Our python test takes two inputs: N(numRows), iters(max iterations) \
 In each iteration, x and x_new is switched, so that's why there are two separate calls for the kernel.
 
 ## Further Reference
-Check `python/test/kaas/kaasTest.py` to see a kaas version test for the Jacobi kernel.
+Check `python/test/kaas/kaasTest.py` to see a kaas version test for the Jacobi kernel. \
+First, make sure you copy and paste `jacobi.ptx` to `kerns/`. \
+Then, in the `testLoopJacobi()` function, you can see how jacobi kernel is set up and called by our kaas. \
+One thing to note is that I set `xBuf` to be epheremal because the output should be stored in the `x_new` when the number of iterations is even.

@@ -239,9 +239,10 @@ class kaasReqDense():
         kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
         return cls(kernels)
 
-    def __init__(self, kernels):
+    def __init__(self, kernels, nIter=1):
         self.bufferMap = {}
         self.kernels = []
+        self.nIter = nIter
         for kern in kernels:
             arguments = []
             for buf in kern.arguments:

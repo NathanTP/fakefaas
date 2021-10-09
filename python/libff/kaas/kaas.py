@@ -197,11 +197,16 @@ class kaasReq():
     @classmethod
     def fromDict(cls, d):
         kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
-        return cls(kernels)
+        if 'nIter' in d:
+            nIter = d['nIter']
+        else:
+            nIter = 1
+        return cls(kernels, nIter=nIter)
 
-    def __init__(self, kernels):
+    def __init__(self, kernels, nIter=1):
         """Turn a list of kernelSpecs into a kaas Request"""
         self.kernels = kernels
+        self.nIter = nIter
 
     def reKey(self, keyMap):
         """Renames kv keys for non-ephemeral buffers based on a keyMap.
@@ -215,7 +220,8 @@ class kaasReq():
                         buf.key = keyMap[buf.name]
 
     def toDict(self):
-        return {"kernels": [k.toDict() for k in self.kernels]}
+        return {"kernels": [k.toDict() for k in self.kernels],
+                "nIter" : self.nIter}
 
 
 denseBuf = collections.namedtuple("denseBuf",
@@ -240,7 +246,12 @@ class kaasReqDense():
     @classmethod
     def fromDict(cls, d):
         kernels = [kernelSpec.fromDict(ks) for ks in d['kernels']]
-        return cls(kernels)
+        if 'nIter' in d:
+            nIter = d['nIter']
+        else:
+            nIter = 1
+
+        return cls(kernels, nIter=nIter)
 
     def __init__(self, kernels, nIter=1):
         self.bufferMap = {}

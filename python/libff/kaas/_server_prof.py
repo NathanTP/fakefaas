@@ -5,9 +5,7 @@ import collections
 import logging
 import atexit
 import os
-
-import libff as ff
-import libff.kv
+import time
 
 from . import kaas
 
@@ -38,7 +36,22 @@ def profSync():
         cuda.Context.synchronize()
 
 
-def updateProf(name, val, level=1):
+def startTimer(level=1):
+    if level <= profLevel:
+        return time.time()
+    else:
+        return None
+
+
+def updateTimer(name, startTime, level=1, final=True):
+    if level <= profLevel:
+        if final:
+            profs[name].increment((time.time() - startTime)*1000)
+        else:
+            profs[name].update((time.time() - startTime)*1000)
+
+
+def updateProf(name, val, level=1, final=True):
     if level <= profLevel:
         profs[name].update(val)
 
@@ -81,7 +94,7 @@ eventMetrics = [
     't_cudaMM',
     't_hostMM']
 
-eventMetrics += ['t_makeRoom', 't_invokeExternal', 't_getKern', 't_setupArgs', 't_bCacheLoad']
+eventMetrics += ['t_makeRoom', 't_invokeExternal', 't_setupArgs', 't_bCacheLoad']
 
 # These metrics need to be handled with special cases
 metricSpecial = ['t_invoke']
@@ -149,15 +162,17 @@ class kaasBuf():
         else:
             updateProf('s_htod', self.size)
 
-            with ff.timer('t_cudaMM', getProf(), final=False):
-                self.dbuf = cuda.mem_alloc(self.size)
-                profSync()
+            pstart = startTimer()
+            self.dbuf = cuda.mem_alloc(self.size)
+            profSync()
+            updateTimer('t_cudaMM', pstart, final=False)
 
             if self.hbuf is not None:
                 logging.debug(f"Moving {self.size}B from host buffer '{self.name}' to device address 0x{hex(int(self.dbuf))}")
-                with ff.timer('t_htod', getProf(), final=False):
-                    cuda.memcpy_htod(self.dbuf, self.hbuf)
-                    profSync()
+                pstart = startTimer()
+                cuda.memcpy_htod(self.dbuf, self.hbuf)
+                profSync()
+                updateTimer('t_htod', pstart, final=False)
 
             self.onDevice = True
             return self.size
@@ -174,32 +189,37 @@ class kaasBuf():
                 self.size, hex(int(self.dbuf)), self.name))
 
             if self.hbuf is None:
-                with ff.timer('t_hostMM', getProf(), final=False):
-                    self.hbuf = memoryview(bytearray(self.size))
+                pstart = startTimer()
+                self.hbuf = memoryview(bytearray(self.size))
+                updateTimer('t_hostMM', pstart, final=False)
 
             updateProf('s_dtoh', self.size)
-            with ff.timer('t_dtoh', getProf(), final=False):
-                cuda.memcpy_dtoh(self.hbuf, self.dbuf)
-                profSync()
+            pstart = startTimer()
+            cuda.memcpy_dtoh(self.hbuf, self.dbuf)
+            profSync()
+            updateTimer('t_dtoh', pstart, final=False)
 
     def freeDevice(self):
         """Free any memory that is allocated on the device."""
         if not self.onDevice:
             return
         else:
-            with ff.timer('t_cudaMM', getProf(), final=False):
-                self.dbuf.free()
-                profSync()
+            pstart = startTimer()
+            self.dbuf.free()
+            profSync()
+            updateTimer('t_cudaMM', pstart, final=False)
+
             self.dbuf = None
             self.onDevice = False
 
     def clear(self):
         logging.debug("Clearing existing buffer " + self.name)
-        with ff.timer('t_zero', getProf(), final=False):
-            self.hbuf = None
-            if self.onDevice:
-                cuda.memset_d8(self.dbuf, 0, self.size)
-                profSync()
+        pstart = startTimer()
+        self.hbuf = None
+        if self.onDevice:
+            cuda.memset_d8(self.dbuf, 0, self.size)
+            profSync()
+        updateTimer('t_zero', pstart, final=False)
 
 
 class kaasFunc():
@@ -264,12 +284,13 @@ class kernelCache():
             kernelFunc = spec[2]
 
             updateProf('n_KMiss', 1)
-            with ff.timer('t_kernelLoad', getProf(), final=False):
-                if libPath not in self.libs:
-                    self.libs[libPath] = cuda.module_from_file(libPath)
+            pstart = startTimer()
+            if libPath not in self.libs:
+                self.libs[libPath] = cuda.module_from_file(libPath)
 
-                litTypes = [lit[0] for lit in literals]
-                self.kerns[name] = kaasFunc(self.libs[libPath], kernelFunc, litTypes, len(args))
+            litTypes = [lit[0] for lit in literals]
+            self.kerns[name] = kaasFunc(self.libs[libPath], kernelFunc, litTypes, len(args))
+            updateTimer('t_kernelLoad', pstart, final=False)
         else:
             updateProf('n_KHit', 1)
 
@@ -386,8 +407,9 @@ class bufferCache():
                     updateProf('n_devDMiss', 1)
                     total += size
 
-        with ff.timer('t_devDEvict', getProf(), final=False):
-            self.makeRoom(total)
+        pstart = startTimer()
+        self.makeRoom(total)
+        updateTimer('t_devDEvict', pstart, final=False)
 
     def load(self, bSpec, overwrite=False):
         """Load a buffer onto the device, fetching from the KV store if
@@ -418,8 +440,10 @@ class bufferCache():
                 if buf.ephemeral:
                     self.ephemerals[key] = buf
             else:
-                with ff.timer('t_hostDLoad', getProf(), final=False):
-                    raw = self.kv.get(key, profile=getProf(mod='kv'), profFinal=False)
+                pstart = startTimer()
+                raw = self.kv.get(key, profile=getProf(mod='kv'), profFinal=False)
+                updateTimer('t_hostDLoad', pstart, final=False)
+
                 if raw is None:
                     logging.debug("Loading (new buffer): {}".format(name))
                     buf = kaasBuf.fromSpec(bSpec)
@@ -454,8 +478,9 @@ class bufferCache():
                 # pickled. This should still be zero copy.
                 logging.debug("Writing back to kv: {} (key: {})".format(buf.name, buf.key))
                 updateProf('n_hostDWriteBack', 1)
-                with ff.timer('t_hostDWriteBack', getProf(), final=False):
-                    self.kv.put(buf.key, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
+                pstart = startTimer()
+                self.kv.put(buf.key, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
+                updateTimer('t_hostDWriteBack', pstart, final=False)
             buf.dirty = False
 
     def flush(self):
@@ -512,16 +537,16 @@ def kaasServeInternal(req, ctx):
     # We try to help the cuda memory allocator out by freeing all the buffers
     # at once instead of mixing frees and mallocs at a fine-grain. This loop
     # finds all the unique buffers in the request
-    with ff.timer("t_makeRoom", getProf(), final=False):
-        bCache.makeRoomForBufs(req.bufferMap.values())
+    pstart = startTimer()
+    bCache.makeRoomForBufs(req.bufferMap.values())
+    updateTimer('t_makeRoom', pstart, final=False)
 
     invokeTimes = []
     visibleOutputs = []
 
     for i in range(req.nIter):
         for kSpec in req.kernels:
-            with ff.timer("t_getKern", getProf(), final=False):
-                kern = kCache.get(kSpec)
+            kern = kCache.get(kSpec)
 
             specArgs = kSpec[7]
             ioTypes = kSpec[8]
@@ -529,11 +554,12 @@ def kaasServeInternal(req, ctx):
             arguments = []
             for argName, ioType in zip(specArgs, ioTypes):
                 arg = req.bufferMap[argName]
-                with ff.timer("t_setupArgs", getProf(), final=False):
-                    if ioType == 'o':
-                        argBuf = bCache.load(arg, overwrite=True)
-                    else:
-                        argBuf = bCache.load(arg)
+                pstart = startTimer()
+                if ioType == 'o':
+                    argBuf = bCache.load(arg, overwrite=True)
+                else:
+                    argBuf = bCache.load(arg)
+                updateTimer('t_setupArgs', pstart, final=False)
 
                 if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                     bCache.dirty(argBuf.key)
@@ -541,9 +567,10 @@ def kaasServeInternal(req, ctx):
 
                 arguments.append(argBuf)
 
-            with ff.timer("t_invokeExternal", getProf(), final=False):
-                timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
-                profSync()
+            pstart = startTimer()
+            timer = kern.Invoke(kSpec[6], arguments, kSpec[3], kSpec[4], kSpec[5])
+            profSync()
+            updateTimer('t_invokeExternal', pstart, final=False)
             invokeTimes.append(timer)
 
             for buf in arguments:

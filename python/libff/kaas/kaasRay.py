@@ -1,7 +1,7 @@
 import libff as ff
 import libff.invoke
-from . import _server_light as _server
-# from . import _server_prof as _server
+# from . import _server_light as _server
+from . import _server_prof as _server
 
 import ray
 

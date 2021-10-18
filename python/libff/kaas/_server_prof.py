@@ -11,6 +11,8 @@ from . import kaas
 
 from . import cutlass
 
+from . import complexCutlass
+
 # logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.DEBUG)
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 
@@ -19,7 +21,7 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
 #   - 1 metrics that will have little effect on performance
 #   - 2 synchronize cuda aggresively to get accurate measurements (hurts e2e
 #       perf)
-profLevel = 1
+profLevel = 2
 
 # This is a global reference to the current ff.profCollection (reset for each call)
 profs = None
@@ -255,13 +257,20 @@ class kaasFunc():
             logging.debug("Invoking <<<{}, {}, {}>>>cutlassSgemm({})".format(gridDim, blockDim, sharedSize,
                           ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
 
+            cuda.memset_d8(bufs[2].dbuf, 0, bufs[2].size)
             params = cutlass.parseSgemmArgs(literalVals, dAddrs, kCache.cutlassAdapter)
             self.func.prepare("320s")
+            return self.func.prepared_timed_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
+        elif self.fName == "_ZN7cutlass6KernelINS_4gemm6kernel4GemmINS1_11threadblock12MmaPipelinedINS1_9GemmShapeILi128ELi128ELi8EEENS_9transform11threadblock22PredicatedTileIteratorINS_11MatrixShapeILi128ELi8EEENS_7complexIfEENS_6layout8RowMajorELi1ENS8_30PitchLinearStripminedThreadMapINSF_16PitchLinearShapeILi8ELi128EEELi256ELi1EEELi1EEENS9_19RegularTileIteratorISC_SE_NSF_11ColumnMajorELi1ENS8_33TransposePitchLinearThreadMapSimtISK_EELi8EEENSA_INSB_ILi8ELi128EEESE_SG_Li0ENSH_INSI_ILi128ELi8EEELi256ELi1EEELi1EEENSM_ISR_SE_SG_Li0EST_Li8EEESE_SG_NS4_9MmaPolicyINS1_4warp7MmaSimtINS6_ILi32ELi64ELi8EEESE_SN_SE_SG_SE_SG_NSX_13MmaSimtPolicyINSB_ILi4ELi8EEENSF_19RowMajorInterleavedILi2EEENS6_ILi2ELi2ELi1EEEEELi1ELNS_16ComplexTransformE0ELS16_0EbEENSB_ILi2ELi0EEENSB_ILi0ELi0EEELi1EEENS_21NumericArrayConverterISE_SE_Li4ELNS_15FloatRoundStyleE2EEES1D_bEENS_8epilogue11threadblock8EpilogueIS7_S17_Li1ENS1G_22PredicatedTileIteratorINS1G_26OutputTileOptimalThreadMapINS1G_15OutputTileShapeILi128ELi1ELi4ELi4ELi1EEENS1K_ILi1ELi2ELi4ELi1ELi8EEELi256ELi1ELi64EEESE_EENS1F_4warp20FragmentIteratorSimtISZ_NS1_6thread3MmaINS6_ILi8ELi8ELi1EEESE_SN_SE_SG_SE_SG_NS_4arch13OpMultiplyAddEbEESG_S15_EENS1P_16TileIteratorSimtISZ_S1W_SE_SG_S15_EENS1G_18SharedLoadIteratorINS1N_18CompactedThreadMapESE_Li8EEENS1F_6thread17LinearCombinationISE_Li1ESE_SE_LNS23_9ScaleType4KindE0ELS1C_2EEENSB_ILi0ELi9EEELi1EEENS4_30GemmIdentityThreadblockSwizzleILi1EEELb0EEEEEvNT_6ParamsE":
+            logging.debug("Invoking <<<{}, {}, {}>>>cutlassComplexGemm({})".format(gridDim, blockDim, sharedSize,
+                          ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
+            cuda.memset_d8(bufs[2].dbuf, 0, bufs[2].size)
+            params = complexCutlass.parseSgemmArgs(literalVals, dAddrs, kCache.complexAdapter)
+            self.func.prepare("328s")
             return self.func.prepared_timed_call(gridDim, blockDim, params.contents, shared_size=sharedSize)
         else:
             logging.debug("Invoking <<<{}, {}, {}>>>{}({})".format(gridDim, blockDim, sharedSize, self.fName,
                           ", ".join([str(lit) for lit in literalVals] + [str(b.name) for b in bufs])))
-
             return self.func.prepared_timed_call(gridDim, blockDim, *args, shared_size=sharedSize)
 
 
@@ -274,6 +283,7 @@ class kernelCache():
         self.cudaCtx = pycuda.tools.make_default_context()
 
         self.cutlassAdapter = cutlass.loadSgemmAdapter()
+        self.complexAdapter = complexCutlass.loadAdapter()
 
     def get(self, spec):
         name = spec[0]
@@ -544,6 +554,9 @@ def kaasServeInternal(req, ctx):
     invokeTimes = []
     visibleOutputs = []
 
+    # when nIter > 1, we may see the same output multiple times, but we only
+    # want to report it once.
+    visibleOutputs = set()
     for i in range(req.nIter):
         for kSpec in req.kernels:
             kern = kCache.get(kSpec)
@@ -563,7 +576,7 @@ def kaasServeInternal(req, ctx):
 
                 if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                     bCache.dirty(argBuf.key)
-                    visibleOutputs.append(argBuf.key)
+                    visibleOutputs.add(argBuf.key)
 
                 arguments.append(argBuf)
 

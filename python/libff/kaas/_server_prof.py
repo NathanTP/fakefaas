@@ -520,18 +520,24 @@ class bufferCache():
         del self.bufs[buf.key]
 
 
-def kaasServeInternal(req, ctx):
-    """Internal implementation of kaas execution. Req is a kaas.kaasReq, not a
-    dictionary"""
-
+def initServer():
     # These should only get initialized upon invocation, not at import. This is
     # most important for the kCache which has to manage a cuda device context
     global kCache, bCache
+
     if kCache is None:
         kCache = kernelCache()
 
     if bCache is None:
         bCache = bufferCache()
+
+
+def kaasServeInternal(req, ctx):
+    """Internal implementation of kaas execution. Req is a kaas.kaasReq, not a
+    dictionary"""
+
+    global profs
+    profs = ctx.stats
 
     # This gets reset every call because libff only gives us the kv handle per
     # call and it could (in theory) change in some way between calls.
@@ -540,9 +546,6 @@ def kaasServeInternal(req, ctx):
     # We can't estimate memory utilization perfectly so we update our estimate
     # on every request
     bCache.updateSize()
-
-    global profs
-    profs = ctx.stats
 
     # We try to help the cuda memory allocator out by freeing all the buffers
     # at once instead of mixing frees and mallocs at a fine-grain. This loop

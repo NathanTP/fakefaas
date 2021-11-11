@@ -33,6 +33,10 @@ class rayKV():
         pass
 
 
+def init():
+    _server.initServer()
+
+
 # Request serialization/deserialization is a pretty significant chunk of time,
 # but they only change in very minor ways each time so we cache the
 # deserialization here.
@@ -50,13 +54,14 @@ def kaasServeRay(rawReq, stats=None):
     with ff.timer('t_e2e', stats):
         reqRef = rawReq[0]
         renameMap = rawReq[1]
-        if reqRef in reqCache:
-            req = reqCache[reqRef]
-        else:
-            req = ray.get(reqRef)
-            reqCache[reqRef] = req
+        with ff.timer("t_parse_request", stats):
+            if reqRef in reqCache:
+                req = reqCache[reqRef]
+            else:
+                req = ray.get(reqRef)
+                reqCache[reqRef] = req
 
-        req.reKey(renameMap)
+            req.reKey(renameMap)
 
         visibleOutputs = _server.kaasServeInternal(req, ctx)
 

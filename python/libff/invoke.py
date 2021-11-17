@@ -188,13 +188,17 @@ class DirectRemoteFunc(RemoteFunc):
                 raise RuntimeError("Function '" + self.fName + "' not registered")
 
             self.ctx.stats = self.stats.mod('worker')
-            return self.funcs[self.fName](arg, self.ctx)
+            res = self.funcs[self.fName](arg, self.ctx)
+            return res
 
     def getStats(self):
         return self.stats
 
-    def resetStats(self):
-        self.stats.reset()
+    def resetStats(self, newStats=None):
+        if newStats is not None:
+            self.stats = newStats
+        else:
+            self.stats.reset()
 
     def Close(self):
         if self.ctx.cudaDev is not None:
@@ -484,10 +488,13 @@ class ProcessRemoteFunc(RemoteFunc):
             self.stats.mod('worker').merge(workerStats)
             return self.stats
 
-    def resetStats(self):
+    def resetStats(self, newStats=None):
         # getStats resets everything on the client
         self.getStats()
-        self.stats.reset()
+        if newStats is None:
+            self.stats.reset()
+        else:
+            self.stats = newStats
 
     def Close(self):
         # State is global now, so there's nothing to clean, might even remove

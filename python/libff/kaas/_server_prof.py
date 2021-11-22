@@ -295,8 +295,11 @@ class kernelCache():
 
             updateProf('n_KMiss', 1)
             pstart = startTimer()
-            if libPath not in self.libs:
-                self.libs[libPath] = cuda.module_from_file(libPath)
+            try:
+                if libPath not in self.libs:
+                    self.libs[libPath] = cuda.module_from_file(libPath)
+            except pycuda._driver.RuntimeError as e:
+                raise RuntimeError(f"Could not load kaas library at {libPath}: {e.args}") from e
 
             litTypes = [lit[0] for lit in literals]
             self.kerns[name] = kaasFunc(self.libs[libPath], kernelFunc, litTypes, len(args))

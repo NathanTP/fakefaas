@@ -561,8 +561,10 @@ def kaasServeInternal(req, ctx):
     visibleOutputs = []
 
     # when nIter > 1, we may see the same output multiple times, but we only
-    # want to report it once.
-    visibleOutputs = set()
+    # want to report it once. OrderedDict keys are unique and ordered, we don't
+    # use the values.
+    visibleOutputs = collections.OrderedDict()
+
     for i in range(req.nIter):
         for kSpec in req.kernels:
             kern = kCache.get(kSpec)
@@ -582,7 +584,7 @@ def kaasServeInternal(req, ctx):
 
                 if (ioType == 'o' or ioType == 'io') and not argBuf.ephemeral:
                     bCache.dirty(argBuf.key)
-                    visibleOutputs.add(argBuf.key)
+                    visibleOutputs[argBuf.key] = None
 
                 arguments.append(argBuf)
 
@@ -629,7 +631,7 @@ def kaasServeInternal(req, ctx):
             t_invoke += t()
         profs['t_invoke'].increment(t_invoke*1000)
 
-    return visibleOutputs
+    return list(visibleOutputs.keys())
 
 
 @atexit.register

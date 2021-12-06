@@ -52,6 +52,9 @@ def kaasServeRay(rawReq, stats=None):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
     with ff.timer('t_e2e', stats):
+        with ff.timer("t_load_request", stats):
+            rawReq = ray.get(rawReq[0])
+
         reqRef = rawReq[0]
         renameMap = rawReq[1]
         with ff.timer("t_parse_request", stats):

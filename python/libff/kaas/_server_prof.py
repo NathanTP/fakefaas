@@ -192,7 +192,7 @@ class kaasBuf():
 
             if self.hbuf is None:
                 pstart = startTimer()
-                self.hbuf = memoryview(bytearray(self.size))
+                self.hbuf = bytearray(self.size)
                 updateTimer('t_hostMM', pstart, final=False)
 
             updateProf('s_dtoh', self.size)
@@ -492,7 +492,7 @@ class bufferCache():
                 logging.debug("Writing back to kv: {} (key: {})".format(buf.name, buf.key))
                 updateProf('n_hostDWriteBack', 1)
                 pstart = startTimer()
-                self.kv.put(buf.key, np.asarray(buf.hbuf), profile=getProf(mod='kv'), profFinal=False)
+                self.kv.put(buf.key, buf.hbuf, profile=getProf(mod='kv'), profFinal=False)
                 updateTimer('t_hostDWriteBack', pstart, final=False)
             buf.dirty = False
 

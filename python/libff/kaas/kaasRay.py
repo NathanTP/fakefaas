@@ -21,7 +21,7 @@ class rayKV():
     def get(self, k, profile=None, profFinal=True):
         # Ray returns immutable objects so we have to make a copy
         ref = ray.cloudpickle.loads(k)
-        return bytearray(memoryview(ray.get(ref)))
+        return ray.get(ref)
 
     def delete(self, *keys, profile=None, profFinal=True):
         # Ray is immutable
@@ -52,6 +52,9 @@ def kaasServeRay(rawReq, stats=None):
     ctx = libff.invoke.RemoteCtx(None, rayKV())
     ctx.stats = stats
     with ff.timer('t_e2e', stats):
+        with ff.timer("t_load_request", stats):
+            rawReq = ray.get(rawReq[0])
+
         reqRef = rawReq[0]
         renameMap = rawReq[1]
         with ff.timer("t_parse_request", stats):

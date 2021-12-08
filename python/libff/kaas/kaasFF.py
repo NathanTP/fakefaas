@@ -1,7 +1,8 @@
 from . import kaas
 import libff.invoke
 import libff as ff
-from ._server_prof import kaasServeInternal
+from . import _server_prof as _server
+#from ._server_prof import kaasServeInternal
 
 
 def getHandle(mode, ctx, stats=None):
@@ -19,10 +20,14 @@ def kaasServeLibff(req, ctx):
     # kReq = kaas.kaasReq.fromDict(req)
 
     with ff.timer("t_e2e", ctx.stats):
-        kaasServeInternal(req, ctx)
+        _server.kaasServeInternal(req, ctx)
 
 
 def LibffInvokeRegister():
     """Callback required by libff.invoke in DirectRemoteFunc mode"""
 
     return {"invoke": kaasServeLibff}
+
+
+def init():
+    _server.initServer()

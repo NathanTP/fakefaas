@@ -72,14 +72,7 @@ def kaasServeRay(rawReq, stats=None):
     for outKey in visibleOutputs:
         returns.append(ctx.kv.newRefs[outKey])
 
-    # This is a ray weirdness. If you return multiple values in a tuple, it's
-    # returned as multiple independent references, if you return a tuple of length
-    # one, it's passed as a reference to a tuple. We can't have an extra layer
-    # of indirection for references.
-    if len(returns) == 1:
-        return returns[0]
-    else:
-        return returns
+    return returns
 
 
 @ray.remote(num_gpus=1)

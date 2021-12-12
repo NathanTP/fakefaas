@@ -83,6 +83,7 @@ eventMetrics = [
     'n_devDHit',
     'n_devDMiss',
     'n_devDEvict',
+    'n_invoke',
     't_devDEvict',
     's_devDWriteBack',
     's_htod',
@@ -192,7 +193,7 @@ class kaasBuf():
 
             if self.hbuf is None:
                 pstart = startTimer()
-                self.hbuf = bytearray(self.size)
+                self.hbuf = np.empty(self.size, dtype=np.int8)
                 updateTimer('t_hostMM', pstart, final=False)
 
             updateProf('s_dtoh', self.size)
@@ -567,6 +568,7 @@ def kaasServeInternal(req, ctx):
 
     for i in range(req.nIter):
         for kSpec in req.kernels:
+            profs['n_invoke'].update(1)
             kern = kCache.get(kSpec)
 
             specArgs = kSpec[7]
